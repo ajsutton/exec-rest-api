@@ -9,6 +9,7 @@ block id.)
 from __future__ import annotations
 
 import re
+from typing import Any
 
 from aiohttp import web
 
@@ -21,12 +22,14 @@ from exec_rest_api.cursor import (
 )
 from exec_rest_api.encoding import EncodingError, hex_to_int, map_address_lowercase
 from exec_rest_api.errors import Problem, problem_response
+from exec_rest_api.handlers.computed import call_request_to_rpc
 from exec_rest_api.handlers.transactions import trace_from_rpc
 from exec_rest_api.server import add_get
 from exec_rest_api.upstream import UpstreamClient
 
 _TX_HASH_RE = re.compile(r"^0x[0-9a-fA-F]{64}$")
 _DECIMAL_RE = re.compile(r"^[0-9]+$")
+_HEX_BYTES_RE_FULL = re.compile(r"^0x([0-9a-fA-F]{2})*$")
 
 
 def _bad_request(path: str, detail: str) -> web.Response:
@@ -194,9 +197,101 @@ async def get_trace(request: web.Request) -> web.Response:
     return web.json_response(trace_from_rpc(rpc))
 
 
+# ─── POST /traces/call, /traces/call-many, /traces/raw-transaction ────────
+
+
+async def _read_json_object(request: web.Request) -> dict[str, Any] | web.Response:
+    try:
+        body = await request.json()
+    except (ValueError, TypeError):
+        return _bad_request(request.path, "request body must be valid JSON")
+    if not isinstance(body, dict):
+        return _bad_request(request.path, "request body must be a JSON object")
+    return body
+
+
+def _validate_tracers(value: Any) -> list[str] | str:
+    if not isinstance(value, list) or not value:
+        return "field `tracers` must be a non-empty array"
+    allowed = {"trace", "vmTrace", "stateDiff"}
+    out: list[str] = []
+    for t in value:
+        if t not in allowed:
+            return f"unknown tracer {t!r}; allowed: {sorted(allowed)}"
+        out.append(t)
+    return out
+
+
+async def trace_call_handler(request: web.Request) -> web.Response:
+    body_or_err = await _read_json_object(request)
+    if isinstance(body_or_err, web.Response):
+        return body_or_err
+    body = body_or_err
+    if "call" not in body or "tracers" not in body:
+        return _bad_request(request.path, "fields `call` and `tracers` are required")
+    tracers_or_err = _validate_tracers(body["tracers"])
+    if isinstance(tracers_or_err, str):
+        return _bad_request(request.path, tracers_or_err)
+    try:
+        rpc_call, _at_in_call = call_request_to_rpc(body["call"])
+        at = parse_block_id(body.get("at", "latest")).to_rpc_param()
+    except (ValueError, BlockIdError, KeyError) as e:
+        return _bad_request(request.path, str(e))
+    upstream: UpstreamClient = request.app["upstream"]
+    result = await upstream.call("trace_call", [rpc_call, tracers_or_err, at])
+    return web.json_response(result)
+
+
+async def trace_call_many_handler(request: web.Request) -> web.Response:
+    body_or_err = await _read_json_object(request)
+    if isinstance(body_or_err, web.Response):
+        return body_or_err
+    body = body_or_err
+    if "calls" not in body or "tracers" not in body:
+        return _bad_request(request.path, "fields `calls` and `tracers` are required")
+    tracers_or_err = _validate_tracers(body["tracers"])
+    if isinstance(tracers_or_err, str):
+        return _bad_request(request.path, tracers_or_err)
+    calls = body["calls"]
+    if not isinstance(calls, list):
+        return _bad_request(request.path, "`calls` must be an array")
+    try:
+        rpc_calls = [
+            [call_request_to_rpc(c)[0], tracers_or_err] for c in calls
+        ]
+        at = parse_block_id(body.get("at", "latest")).to_rpc_param()
+    except (ValueError, BlockIdError, KeyError) as e:
+        return _bad_request(request.path, str(e))
+    upstream: UpstreamClient = request.app["upstream"]
+    result = await upstream.call("trace_callMany", [rpc_calls, at])
+    return web.json_response(result)
+
+
+async def trace_raw_transaction_handler(request: web.Request) -> web.Response:
+    body_or_err = await _read_json_object(request)
+    if isinstance(body_or_err, web.Response):
+        return body_or_err
+    body = body_or_err
+    raw = body.get("raw")
+    if not isinstance(raw, str) or not _HEX_BYTES_RE_FULL.fullmatch(raw):
+        return _bad_request(request.path, "field `raw` must be 0x-prefixed hex bytes")
+    tracers_or_err = _validate_tracers(body.get("tracers"))
+    if isinstance(tracers_or_err, str):
+        return _bad_request(request.path, tracers_or_err)
+    upstream: UpstreamClient = request.app["upstream"]
+    result = await upstream.call("trace_rawTransaction", [raw.lower(), tracers_or_err])
+    return web.json_response(result)
+
+
 def register_routes(app: web.Application) -> None:
     add_get(app, "/traces", get_traces)
     # Root trace path: /traces/{hash}/ has empty trace_address. The two-segment
     # form below handles `/traces/{hash}/0,1,2` etc.
     app.router.add_get("/traces/{hash}/", get_trace)
     app.router.add_get("/traces/{hash}/{trace_address}", get_trace)
+    app.router.add_post("/traces/call", trace_call_handler)
+    app.router.add_post("/traces/call/", trace_call_handler)
+    app.router.add_post("/traces/call-many", trace_call_many_handler)
+    app.router.add_post("/traces/call-many/", trace_call_many_handler)
+    app.router.add_post("/traces/raw-transaction", trace_raw_transaction_handler)
+    app.router.add_post("/traces/raw-transaction/", trace_raw_transaction_handler)

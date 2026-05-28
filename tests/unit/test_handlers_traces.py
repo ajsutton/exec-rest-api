@@ -253,3 +253,97 @@ async def test_trace_get_bad_trace_address_400(aiohttp_client):
     tx = "0x" + "ab" * 32
     resp = await client.get(f"/traces/{tx}/not,a,number")
     assert resp.status == 400
+
+
+# ─── POST /traces/call ────────────────────────────────────────────────────
+
+
+async def test_trace_call_forwards_with_at_default(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    mock.call.return_value = {"output": "0x", "trace": [], "stateDiff": None, "vmTrace": None}
+    client = await _build_client(aiohttp_client, mock)
+    resp = await client.post(
+        "/traces/call",
+        json={
+            "call": {"to": "0x" + "ab" * 20, "data": "0x"},
+            "tracers": ["trace"],
+        },
+    )
+    assert resp.status == 200
+    args, _ = mock.call.call_args
+    method, params = args
+    assert method == "trace_call"
+    assert params[0]["to"] == "0x" + "ab" * 20
+    assert params[1] == ["trace"]
+    assert params[2] == "latest"
+
+
+async def test_trace_call_explicit_at(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    mock.call.return_value = {}
+    client = await _build_client(aiohttp_client, mock)
+    await client.post(
+        "/traces/call",
+        json={
+            "call": {"to": "0x" + "ab" * 20},
+            "tracers": ["trace"],
+            "at": "200",
+        },
+    )
+    args, _ = mock.call.call_args
+    _, params = args
+    assert params[2] == "0xc8"
+
+
+async def test_trace_call_missing_tracers_400(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    client = await _build_client(aiohttp_client, mock)
+    resp = await client.post("/traces/call", json={"call": {"to": "0x" + "ab" * 20}})
+    assert resp.status == 400
+
+
+async def test_trace_call_many(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    mock.call.return_value = [{"output": "0x"}, {"output": "0x"}]
+    client = await _build_client(aiohttp_client, mock)
+    resp = await client.post(
+        "/traces/call-many",
+        json={
+            "calls": [{"to": "0x" + "11" * 20}, {"to": "0x" + "22" * 20}],
+            "tracers": ["trace"],
+            "at": "latest",
+        },
+    )
+    assert resp.status == 200
+    args, _ = mock.call.call_args
+    method, params = args
+    assert method == "trace_callMany"
+    # Upstream expects [(call, tracers), (call, tracers), ...] and a block
+    assert isinstance(params[0], list) and len(params[0]) == 2
+    for call_with_tracers in params[0]:
+        assert isinstance(call_with_tracers, list)
+        assert call_with_tracers[1] == ["trace"]
+    assert params[1] == "latest"
+
+
+async def test_trace_raw_transaction(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    mock.call.return_value = {"output": "0x", "trace": []}
+    client = await _build_client(aiohttp_client, mock)
+    resp = await client.post(
+        "/traces/raw-transaction",
+        json={"raw": "0xdeadbeef", "tracers": ["trace"]},
+    )
+    assert resp.status == 200
+    mock.call.assert_awaited_once_with(
+        "trace_rawTransaction", ["0xdeadbeef", ["trace"]]
+    )
+
+
+async def test_trace_raw_transaction_missing_raw_400(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    client = await _build_client(aiohttp_client, mock)
+    resp = await client.post(
+        "/traces/raw-transaction", json={"tracers": ["trace"]}
+    )
+    assert resp.status == 400
