@@ -245,7 +245,7 @@ def _bad_request(path: str, detail: str) -> web.Response:
     )
 
 
-_HEX_BYTES_RE = re.compile(r"^0x([0-9a-fA-F]{2})*$")
+_HEX_BYTES_RE = re.compile(r"^0x([0-9a-fA-F]{2})+$")
 
 
 async def _read_raw_tx(request: web.Request) -> str | web.Response:

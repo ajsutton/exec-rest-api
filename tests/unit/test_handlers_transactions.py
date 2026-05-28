@@ -406,3 +406,11 @@ async def test_post_transactions_already_known_422(aiohttp_client):
     assert resp.status == 422
     body = await resp.json()
     assert body["type"].endswith("/transaction-rejected/already-known")
+
+
+async def test_post_transactions_empty_hex_raw_400(aiohttp_client):
+    """`{"raw": "0x"}` is a zero-byte payload — must be rejected as 400."""
+    mock = AsyncMock(spec=UpstreamClient)
+    client = await _build_client(aiohttp_client, mock)
+    resp = await client.post("/transactions", json={"raw": "0x"})
+    assert resp.status == 400

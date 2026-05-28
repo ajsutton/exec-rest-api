@@ -19,9 +19,6 @@ async def test_get_transaction_bad_hash_400(proxy_client):
     assert resp.status == 400
 
 
-import json  # noqa: E402
-
-
 async def test_post_transactions_round_trip(proxy_client):
     """Build, sign offline using anvil's pre-funded key, submit, fetch."""
     # Use anvil's chainId and a pre-funded account. To keep this test simple we
