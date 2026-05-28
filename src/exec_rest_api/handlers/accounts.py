@@ -212,6 +212,42 @@ async def account_summary(request: web.Request) -> web.Response:
     )
 
 
+async def post_proof_search(request: web.Request) -> web.Response:
+    addr, err = _parse_address(request.match_info["addr"], request.path)
+    if err is not None:
+        return err
+    assert addr is not None
+    try:
+        body = await request.json()
+    except (ValueError, TypeError):
+        return _bad_request(request.path, "request body must be valid JSON")
+    if not isinstance(body, dict) or "slots" not in body:
+        return _bad_request(request.path, "field `slots` is required")
+    slots_raw = body["slots"]
+    if not isinstance(slots_raw, list):
+        return _bad_request(request.path, "`slots` must be an array")
+    slots: list[str] = []
+    for s in slots_raw:
+        if not isinstance(s, str):
+            return _bad_request(request.path, "slot entries must be strings")
+        if _HEX_SLOT_RE.fullmatch(s):
+            slots.append(_pad_slot_to_32_bytes(s.lower()))
+        else:
+            return _bad_request(
+                request.path, f"slot must be 0x-hex (1..64 chars), got {s!r}"
+            )
+    at_raw = body.get("at", "latest")
+    if not isinstance(at_raw, str):
+        return _bad_request(request.path, "`at` must be a string block identifier")
+    try:
+        at = parse_block_id(at_raw).to_rpc_param()
+    except BlockIdError as e:
+        return _bad_request(request.path, str(e))
+    upstream: UpstreamClient = request.app["upstream"]
+    rpc = await upstream.call("eth_getProof", [addr, slots, at])
+    return web.json_response(_proof_from_rpc(rpc))
+
+
 async def transaction_template(request: web.Request) -> web.Response:
     addr, err = _parse_address(request.match_info["addr"], request.path)
     if err is not None:
@@ -259,5 +295,7 @@ def register_routes(app: web.Application) -> None:
     add_get(app, "/accounts/{addr}/code", account_code)
     add_get(app, "/accounts/{addr}/storage/{slot}", account_storage)
     add_get(app, "/accounts/{addr}/proof", account_proof)
+    app.router.add_post("/accounts/{addr}/proof/search", post_proof_search)
+    app.router.add_post("/accounts/{addr}/proof/search/", post_proof_search)
     add_get(app, "/accounts/{addr}/transaction-template", transaction_template)
     add_get(app, "/accounts/{addr}", account_summary)

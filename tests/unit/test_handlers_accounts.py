@@ -372,3 +372,70 @@ async def test_trailing_slash_balance(aiohttp_client):
 
     resp = await client.get(f"/accounts/{_ADDR}/balance/")
     assert resp.status == 200
+
+
+# ─── POST /accounts/{addr}/proof/search ───────────────────────────────────
+
+
+def _proof_rpc() -> dict:
+    return {
+        "address": "0x" + "11" * 20,
+        "balance": "0x0",
+        "codeHash": "0x" + "00" * 32,
+        "nonce": "0x0",
+        "storageHash": "0x" + "00" * 32,
+        "accountProof": [],
+        "storageProof": [],
+    }
+
+
+async def test_post_proof_search_forwards_slots(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    mock.call.return_value = _proof_rpc()
+    client = await _build_client(aiohttp_client, mock)
+    addr = "0x" + "11" * 20
+    resp = await client.post(
+        f"/accounts/{addr}/proof/search",
+        json={"slots": ["0x1", "0x2"], "at": "latest"},
+    )
+    assert resp.status == 200
+    args, _ = mock.call.call_args
+    method, params = args
+    assert method == "eth_getProof"
+    assert params[0] == addr
+    # Slots zero-padded to 32 bytes
+    assert params[1] == ["0x" + "0" * 63 + "1", "0x" + "0" * 63 + "2"]
+    assert params[2] == "latest"
+
+
+async def test_post_proof_search_at_default_latest(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    mock.call.return_value = _proof_rpc()
+    client = await _build_client(aiohttp_client, mock)
+    addr = "0x" + "11" * 20
+    resp = await client.post(
+        f"/accounts/{addr}/proof/search",
+        json={"slots": ["0x0"]},
+    )
+    assert resp.status == 200
+    args, _ = mock.call.call_args
+    _, params = args
+    assert params[2] == "latest"
+
+
+async def test_post_proof_search_missing_slots_400(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    client = await _build_client(aiohttp_client, mock)
+    addr = "0x" + "11" * 20
+    resp = await client.post(f"/accounts/{addr}/proof/search", json={})
+    assert resp.status == 400
+
+
+async def test_post_proof_search_invalid_slot_400(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    client = await _build_client(aiohttp_client, mock)
+    addr = "0x" + "11" * 20
+    resp = await client.post(
+        f"/accounts/{addr}/proof/search", json={"slots": ["not-hex"]}
+    )
+    assert resp.status == 400
