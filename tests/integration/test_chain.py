@@ -50,11 +50,10 @@ async def test_chain_composite(proxy_client):
     assert isinstance(body["blockNumber"], int)
 
 
-async def test_unknown_path_404_with_problem_body(proxy_client):
-    resp = await proxy_client.get("/blocks/latest")  # not implemented in this plan
+async def test_unknown_path_404(proxy_client):
+    """A path with no registered handler returns aiohttp's default 404."""
+    resp = await proxy_client.get("/no-such-resource")
     assert resp.status == 404
-    # aiohttp's default 404 doesn't go through our problem middleware (HTTPException passthrough),
-    # so this is a plain text 404. We assert the status and move on.
 
 
 async def test_request_id_round_trip(proxy_client):

@@ -1,0 +1,319 @@
+"""Tests for /transactions/* handlers and the shape converters they expose."""
+
+from unittest.mock import AsyncMock
+
+from exec_rest_api.config import Config
+from exec_rest_api.handlers.transactions import (
+    log_from_rpc,
+    receipt_from_rpc,
+    register_routes,
+    transaction_from_rpc,
+)
+from exec_rest_api.server import create_app
+from exec_rest_api.upstream import UpstreamClient
+
+
+def _config() -> Config:
+    return Config(
+        upstream_http="http://localhost:8545",
+        upstream_ws="ws://localhost:8545",
+        listen="127.0.0.1:8080",
+        upstream_timeout_seconds=30.0,
+        default_page_size=1000,
+        max_page_size=10000,
+        sse_buffer_bytes=65536,
+        sse_replay_window=1024,
+        sse_heartbeat_seconds=30,
+        ready_sync_lag=10,
+        log_level="info",
+        log_format=None,
+        metrics_enabled=True,
+    )
+
+
+async def _build_client(aiohttp_client, mock_upstream: UpstreamClient):
+    app = create_app(config=_config(), upstream=mock_upstream)
+    register_routes(app)
+    return await aiohttp_client(app)
+
+
+# ─── shape converters ─────────────────────────────────────────────────────
+
+
+def _legacy_tx_rpc() -> dict:
+    return {
+        "type": "0x0",
+        "hash": "0x" + "ab" * 32,
+        "blockHash": "0x" + "cd" * 32,
+        "blockNumber": "0x100",
+        "transactionIndex": "0x5",
+        "from": "0xAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAa",
+        "to": "0xBBBBBBBBbbbbbbbbBBBBBBBBbbbbbbbbBBBBBBBB",
+        "value": "0xde0b6b3a7640000",  # 1 ether
+        "nonce": "0xa",
+        "gas": "0x5208",
+        "gasPrice": "0x3b9aca00",
+        "input": "0xabcd",
+        "chainId": "0x1",
+        "v": "0x1c",
+        "r": "0x" + "11" * 32,
+        "s": "0x" + "22" * 32,
+    }
+
+
+def test_transaction_from_rpc_legacy():
+    out = transaction_from_rpc(_legacy_tx_rpc())
+    assert out["type"] == "legacy"
+    assert out["hash"] == "0x" + "ab" * 32
+    assert out["blockHash"] == "0x" + "cd" * 32
+    assert out["blockNumber"] == 0x100
+    assert out["transactionIndex"] == 5
+    assert out["from"] == "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    assert out["to"] == "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    assert out["value"] == "1000000000000000000"
+    assert out["nonce"] == 10
+    assert out["gas"] == 0x5208
+    assert out["gasPrice"] == "1000000000"
+    assert out["input"] == "0xabcd"
+    assert out["chainId"] == 1
+    assert out["v"] == "0x1c"
+    assert out["r"] == "0x" + "11" * 32
+    assert out["s"] == "0x" + "22" * 32
+    # legacy txs have no yParity/accessList
+    assert "yParity" not in out
+    assert "accessList" not in out
+
+
+def test_transaction_from_rpc_pending_has_null_block_fields():
+    rpc = _legacy_tx_rpc()
+    rpc["blockHash"] = None
+    rpc["blockNumber"] = None
+    rpc["transactionIndex"] = None
+    out = transaction_from_rpc(rpc)
+    assert out["blockHash"] is None
+    assert out["blockNumber"] is None
+    assert out["transactionIndex"] is None
+
+
+def test_transaction_from_rpc_contract_creation_to_null():
+    rpc = _legacy_tx_rpc()
+    rpc["to"] = None
+    out = transaction_from_rpc(rpc)
+    assert out["to"] is None
+
+
+def test_transaction_from_rpc_dynamic_fee():
+    rpc = _legacy_tx_rpc()
+    rpc["type"] = "0x2"
+    del rpc["gasPrice"]
+    rpc["maxFeePerGas"] = "0x4a817c800"
+    rpc["maxPriorityFeePerGas"] = "0x77359400"
+    rpc["accessList"] = [
+        {"address": "0x" + "ab" * 20, "storageKeys": ["0x" + "cd" * 32]}
+    ]
+    rpc["yParity"] = "0x1"
+    out = transaction_from_rpc(rpc)
+    assert out["type"] == "dynamic-fee"
+    assert out["maxFeePerGas"] == "20000000000"
+    assert out["maxPriorityFeePerGas"] == "2000000000"
+    assert out["accessList"] == [
+        {"address": "0x" + "ab" * 20, "storageKeys": ["0x" + "cd" * 32]}
+    ]
+    assert out["yParity"] == 1
+    assert "gasPrice" not in out
+
+
+def test_transaction_from_rpc_blob():
+    rpc = _legacy_tx_rpc()
+    rpc["type"] = "0x3"
+    rpc["maxFeePerBlobGas"] = "0x1"
+    rpc["blobVersionedHashes"] = ["0x" + "ee" * 32]
+    out = transaction_from_rpc(rpc)
+    assert out["type"] == "blob"
+    assert out["maxFeePerBlobGas"] == "1"
+    assert out["blobVersionedHashes"] == ["0x" + "ee" * 32]
+
+
+# ─── receipt converter ────────────────────────────────────────────────────
+
+
+def _receipt_rpc() -> dict:
+    return {
+        "transactionHash": "0x" + "ab" * 32,
+        "transactionIndex": "0x3",
+        "blockHash": "0x" + "cd" * 32,
+        "blockNumber": "0x100",
+        "from": "0x" + "11" * 20,
+        "to": "0x" + "22" * 20,
+        "cumulativeGasUsed": "0x5208",
+        "gasUsed": "0x5208",
+        "effectiveGasPrice": "0x3b9aca00",
+        "contractAddress": None,
+        "logs": [],
+        "logsBloom": "0x" + "00" * 256,
+        "status": "0x1",
+        "type": "0x2",
+    }
+
+
+def test_receipt_from_rpc_success():
+    out = receipt_from_rpc(_receipt_rpc())
+    assert out["status"] == "success"
+    assert out["type"] == "dynamic-fee"
+    assert out["blockNumber"] == 0x100
+    assert out["transactionIndex"] == 3
+    assert out["effectiveGasPrice"] == "1000000000"
+    assert out["contractAddress"] is None
+    assert out["logs"] == []
+
+
+def test_receipt_from_rpc_contract_creation():
+    rpc = _receipt_rpc()
+    rpc["to"] = None
+    rpc["contractAddress"] = "0x" + "Cc" * 20
+    out = receipt_from_rpc(rpc)
+    assert out["to"] is None
+    assert out["contractAddress"] == "0x" + "cc" * 20
+
+
+def test_receipt_from_rpc_failed():
+    rpc = _receipt_rpc()
+    rpc["status"] = "0x0"
+    out = receipt_from_rpc(rpc)
+    assert out["status"] == "failed"
+
+
+def test_receipt_from_rpc_blob_fields():
+    rpc = _receipt_rpc()
+    rpc["blobGasUsed"] = "0x20000"
+    rpc["blobGasPrice"] = "0x1"
+    out = receipt_from_rpc(rpc)
+    assert out["blobGasUsed"] == 0x20000
+    assert out["blobGasPrice"] == "1"
+
+
+# ─── log converter ────────────────────────────────────────────────────────
+
+
+def test_log_from_rpc():
+    rpc = {
+        "address": "0xAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAa",
+        "topics": ["0x" + "11" * 32, "0x" + "22" * 32],
+        "data": "0xabcd",
+        "blockHash": "0x" + "cd" * 32,
+        "blockNumber": "0x100",
+        "transactionHash": "0x" + "ee" * 32,
+        "transactionIndex": "0x3",
+        "logIndex": "0x7",
+        "removed": False,
+    }
+    out = log_from_rpc(rpc)
+    assert out == {
+        "address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "topics": ["0x" + "11" * 32, "0x" + "22" * 32],
+        "data": "0xabcd",
+        "blockHash": "0x" + "cd" * 32,
+        "blockNumber": 0x100,
+        "transactionHash": "0x" + "ee" * 32,
+        "transactionIndex": 3,
+        "logIndex": 7,
+        "removed": False,
+    }
+
+
+# ─── endpoints ────────────────────────────────────────────────────────────
+
+
+async def test_get_transaction_by_hash(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    mock.call.return_value = _legacy_tx_rpc()
+    client = await _build_client(aiohttp_client, mock)
+
+    tx_hash = "0x" + "ab" * 32
+    resp = await client.get(f"/transactions/{tx_hash}")
+    assert resp.status == 200
+    body = await resp.json()
+    assert body["hash"] == tx_hash
+    assert body["type"] == "legacy"
+    mock.call.assert_awaited_once_with("eth_getTransactionByHash", [tx_hash])
+
+
+async def test_get_transaction_not_found(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    mock.call.return_value = None
+    client = await _build_client(aiohttp_client, mock)
+
+    tx_hash = "0x" + "ff" * 32
+    resp = await client.get(f"/transactions/{tx_hash}")
+    assert resp.status == 404
+    body = await resp.json()
+    assert body["type"].endswith("/not-found")
+
+
+async def test_get_transaction_invalid_hash_400(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    client = await _build_client(aiohttp_client, mock)
+
+    resp = await client.get("/transactions/0xnope")
+    assert resp.status == 400
+    body = await resp.json()
+    assert body["type"].endswith("/invalid-request")
+    mock.call.assert_not_called()
+
+
+async def test_get_receipt(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    mock.call.return_value = _receipt_rpc()
+    client = await _build_client(aiohttp_client, mock)
+
+    tx_hash = "0x" + "ab" * 32
+    resp = await client.get(f"/transactions/{tx_hash}/receipt")
+    assert resp.status == 200
+    body = await resp.json()
+    assert body["status"] == "success"
+    assert body["transactionIndex"] == 3
+    mock.call.assert_awaited_once_with("eth_getTransactionReceipt", [tx_hash])
+
+
+async def test_get_receipt_not_found(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    mock.call.return_value = None
+    client = await _build_client(aiohttp_client, mock)
+
+    tx_hash = "0x" + "ff" * 32
+    resp = await client.get(f"/transactions/{tx_hash}/receipt")
+    assert resp.status == 404
+
+
+async def test_get_trace(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    mock.call.return_value = [
+        {
+            "action": {"from": "0x" + "11" * 20, "to": "0x" + "22" * 20},
+            "type": "call",
+            "subtraces": 0,
+            "traceAddress": [],
+            "transactionHash": "0x" + "ab" * 32,
+            "blockHash": "0x" + "cd" * 32,
+            "blockNumber": "0x100",
+        }
+    ]
+    client = await _build_client(aiohttp_client, mock)
+
+    tx_hash = "0x" + "ab" * 32
+    resp = await client.get(f"/transactions/{tx_hash}/trace")
+    assert resp.status == 200
+    body = await resp.json()
+    assert isinstance(body, list)
+    assert body[0]["blockNumber"] == 0x100
+    mock.call.assert_awaited_once_with("trace_transaction", [tx_hash])
+
+
+async def test_get_trace_null_is_404(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    mock.call.return_value = None
+    client = await _build_client(aiohttp_client, mock)
+
+    tx_hash = "0x" + "ff" * 32
+    resp = await client.get(f"/transactions/{tx_hash}/trace")
+    assert resp.status == 404

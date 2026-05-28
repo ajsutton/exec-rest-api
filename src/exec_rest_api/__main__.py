@@ -15,7 +15,7 @@ from aiohttp import web
 
 from exec_rest_api import __version__
 from exec_rest_api.config import Config, ConfigError, parse_config
-from exec_rest_api.handlers import chain, health
+from exec_rest_api.handlers import accounts, blocks, chain, gas, health, logs, traces, transactions
 from exec_rest_api.server import create_app
 from exec_rest_api.upstream import UpstreamClient
 
@@ -80,6 +80,12 @@ async def _run(config: Config) -> None:
         app = create_app(config=config, upstream=upstream)
         health.register_routes(app)
         chain.register_routes(app)
+        gas.register_routes(app)
+        transactions.register_routes(app)
+        blocks.register_routes(app)
+        accounts.register_routes(app)
+        logs.register_routes(app)
+        traces.register_routes(app)
 
         host, port = _split_listen(config.listen)
         runner = web.AppRunner(app, access_log=None)  # we have our own access-log middleware
