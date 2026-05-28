@@ -15,8 +15,6 @@ from typing import Any
 from aiohttp import web
 
 from exec_rest_api.abi_revert import decode_revert_data, is_out_of_gas, is_revert, revert_body
-from exec_rest_api.handlers.blocks import block_header_from_rpc
-from exec_rest_api.handlers.transactions import log_from_rpc
 from exec_rest_api.block_id import parse_block_id
 from exec_rest_api.encoding import (
     decimal_to_hex,
@@ -26,6 +24,8 @@ from exec_rest_api.encoding import (
     parse_input_wei,
 )
 from exec_rest_api.errors import Problem, problem_response
+from exec_rest_api.handlers.blocks import block_header_from_rpc
+from exec_rest_api.handlers.transactions import log_from_rpc
 from exec_rest_api.upstream import UpstreamClient, UpstreamJsonRpcError
 
 _HEX_BYTES_RE: re.Pattern[str] = re.compile(r"^0x([0-9a-fA-F]{2})*$")
@@ -274,14 +274,19 @@ async def access_list(request: web.Request) -> web.Response:
 def _simulate_call_result(call_rpc: dict[str, Any]) -> dict[str, Any]:
     """Shape one inner call result from eth_simulateV1.
 
-    If `status` indicates failure or `error` is present, emit the revert body.
-    Otherwise emit returnData / gasUsed / logs.
+    Detects a failed call from either an explicit `error` field or a `status`
+    field that decodes to zero. Otherwise emits returnData / gasUsed / logs.
     """
-    status = call_rpc.get("status")
-    if (status is not None and status == "0x0") or call_rpc.get("error"):
-        data = call_rpc.get("returnData", "0x")
-        if not isinstance(data, str):
-            data = "0x"
+    status_raw = call_rpc.get("status")
+    status_failed = False
+    if isinstance(status_raw, str) and status_raw.startswith("0x"):
+        try:
+            status_failed = int(status_raw, 16) == 0
+        except ValueError:
+            status_failed = False
+    if status_failed or call_rpc.get("error"):
+        data_raw = call_rpc.get("returnData", "0x")
+        data = data_raw if isinstance(data_raw, str) else "0x"
         reason, panic = decode_revert_data(data)
         return {
             "reverted": True,
@@ -289,8 +294,10 @@ def _simulate_call_result(call_rpc: dict[str, Any]) -> dict[str, Any]:
             "reason": reason,
             "panicCode": panic,
         }
+    return_data_raw = call_rpc.get("returnData")
+    return_data = return_data_raw if isinstance(return_data_raw, str) else "0x"
     out: dict[str, Any] = {
-        "returnData": call_rpc.get("returnData", "0x").lower(),
+        "returnData": return_data.lower(),
         "gasUsed": hex_to_int(call_rpc["gasUsed"]),
     }
     if "logs" in call_rpc and call_rpc["logs"] is not None:
@@ -377,8 +384,12 @@ async def debug_traces_call(request: web.Request) -> web.Response:
         at = parse_block_id(at_raw).to_rpc_param()
     except (ValueError, KeyError) as e:
         return _bad_request(request.path, str(e))
-    tracer = body.get("tracer") or {}
-    if not isinstance(tracer, dict):
+    tracer_raw = body.get("tracer")
+    if tracer_raw is None:
+        tracer = {}
+    elif isinstance(tracer_raw, dict):
+        tracer = tracer_raw
+    else:
         return _bad_request(request.path, "`tracer` must be an object")
     upstream: UpstreamClient = request.app["upstream"]
     try:

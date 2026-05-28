@@ -498,3 +498,93 @@ async def test_debug_traces_call_missing_call_field_400(aiohttp_client):
     client = await _build_client(aiohttp_client, mock)
     resp = await client.post("/debug-traces/call", json={"tracer": {}})
     assert resp.status == 400
+
+
+async def test_simulate_status_with_leading_zeros_treated_as_failed(aiohttp_client):
+    """Erigon may report status as `0x00` rather than `0x0` — both are failed."""
+    mock = AsyncMock(spec=UpstreamClient)
+    mock.call.return_value = [
+        {
+            "number": "0x1",
+            "hash": "0x" + "aa" * 32,
+            "parentHash": "0x" + "bb" * 32,
+            "stateRoot": "0x" + "11" * 32,
+            "transactionsRoot": "0x" + "22" * 32,
+            "receiptsRoot": "0x" + "33" * 32,
+            "logsBloom": "0x" + "00" * 256,
+            "gasUsed": "0x1",
+            "gasLimit": "0x2",
+            "timestamp": "0x3",
+            "miner": "0x" + "44" * 20,
+            "difficulty": "0x0",
+            "totalDifficulty": "0x0",
+            "extraData": "0x",
+            "mixHash": "0x" + "55" * 32,
+            "nonce": "0x0000000000000000",
+            "size": "0x100",
+            "calls": [{"returnData": "0x", "gasUsed": "0x0", "status": "0x00"}],
+        }
+    ]
+    client = await _build_client(aiohttp_client, mock)
+    resp = await client.post(
+        "/simulate", json={"blockStateCalls": [{"calls": []}]}
+    )
+    body = await resp.json()
+    assert body[0]["calls"][0]["reverted"] is True
+
+
+async def test_simulate_success_handles_null_return_data(aiohttp_client):
+    """A node sending an explicit `null` for returnData on success shouldn't crash."""
+    mock = AsyncMock(spec=UpstreamClient)
+    mock.call.return_value = [
+        {
+            "number": "0x1",
+            "hash": "0x" + "aa" * 32,
+            "parentHash": "0x" + "bb" * 32,
+            "stateRoot": "0x" + "11" * 32,
+            "transactionsRoot": "0x" + "22" * 32,
+            "receiptsRoot": "0x" + "33" * 32,
+            "logsBloom": "0x" + "00" * 256,
+            "gasUsed": "0x1",
+            "gasLimit": "0x2",
+            "timestamp": "0x3",
+            "miner": "0x" + "44" * 20,
+            "difficulty": "0x0",
+            "totalDifficulty": "0x0",
+            "extraData": "0x",
+            "mixHash": "0x" + "55" * 32,
+            "nonce": "0x0000000000000000",
+            "size": "0x100",
+            "calls": [{"returnData": None, "gasUsed": "0x5208"}],
+        }
+    ]
+    client = await _build_client(aiohttp_client, mock)
+    resp = await client.post(
+        "/simulate", json={"blockStateCalls": [{"calls": []}]}
+    )
+    assert resp.status == 200
+    body = await resp.json()
+    assert body[0]["calls"][0]["returnData"] == "0x"
+    assert body[0]["calls"][0]["gasUsed"] == 21000
+
+
+async def test_debug_traces_call_string_tracer_400(aiohttp_client):
+    """`tracer` must be a JSON object; a bare string is rejected."""
+    mock = AsyncMock(spec=UpstreamClient)
+    client = await _build_client(aiohttp_client, mock)
+    resp = await client.post(
+        "/debug-traces/call",
+        json={"call": {"to": "0x" + "ab" * 20}, "tracer": "callTracer"},
+    )
+    assert resp.status == 400
+
+
+async def test_debug_traces_call_false_tracer_400(aiohttp_client):
+    """A falsey-but-not-None tracer (e.g., false) should not coerce to `{}`."""
+    mock = AsyncMock(spec=UpstreamClient)
+    client = await _build_client(aiohttp_client, mock)
+    resp = await client.post(
+        "/debug-traces/call",
+        json={"call": {"to": "0x" + "ab" * 20}, "tracer": False},
+    )
+    assert resp.status == 400
