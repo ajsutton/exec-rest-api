@@ -83,3 +83,12 @@ async def test_keccak256_garbled_json_400(aiohttp_client):
         headers={"Content-Type": "application/json"},
     )
     assert resp.status == 400
+
+
+async def test_keccak256_upstream_non_string_502(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    mock.call.return_value = None
+    client = await _build_client(aiohttp_client, mock)
+    resp = await client.post("/utils/keccak256", json={"data": "0x"})
+    assert resp.status == 502
+    assert resp.headers["Content-Type"].startswith("application/problem+json")

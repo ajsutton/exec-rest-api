@@ -42,6 +42,16 @@ async def keccak256(request: web.Request) -> web.Response:
         )
     upstream: UpstreamClient = request.app["upstream"]
     digest = await upstream.call("web3_sha3", [data])
+    if not isinstance(digest, str):
+        return problem_response(
+            Problem(
+                status=502,
+                type_slug="upstream-error",
+                title="Upstream error",
+                detail="web3_sha3 returned non-string result",
+                instance=request.path,
+            )
+        )
     return web.json_response({"hash": digest.lower()})
 
 
