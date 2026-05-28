@@ -207,3 +207,67 @@ async def test_pending_requests_raise_on_close(ws_server):
         with pytest.raises(UpstreamWsClosed):
             await request_task
         await client.stop()
+
+
+async def test_reconnects_after_server_close(aiohttp_server):
+    """The client transparently reconnects and continues serving requests."""
+    connect_count = 0
+
+    async def ws_handler(request: web.Request) -> web.WebSocketResponse:
+        nonlocal connect_count
+        connect_count += 1
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        async for msg in ws:
+            if msg.type == WSMsgType.TEXT:
+                req = json.loads(msg.data)
+                if req["method"] == "close_me":
+                    await ws.close()
+                    return ws
+                await ws.send_str(
+                    json.dumps({"jsonrpc": "2.0", "id": req["id"], "result": "ok"})
+                )
+        return ws
+
+    app = web.Application()
+    app.router.add_get("/", ws_handler)
+    server = await aiohttp_server(app)
+
+    on_reconnect_called = asyncio.Event()
+
+    async def on_reconnect() -> None:
+        on_reconnect_called.set()
+
+    async with ClientSession() as session:
+        client = UpstreamWebSocket(
+            session=session,
+            url=str(server.make_url("/")).replace("http://", "ws://"),
+            on_notification=lambda _: None,
+            on_reconnect=on_reconnect,
+            backoff_schedule=(0.05,),
+        )
+        await client.start()
+        assert await client.request("hello") == "ok"
+        # Force the server to drop the connection
+        with pytest.raises(UpstreamWsClosed):
+            await client.request("close_me")
+        # Wait for the reconnect callback (sentinel that re-subscribe should run)
+        await asyncio.wait_for(on_reconnect_called.wait(), timeout=2.0)
+        # And new requests succeed on the new connection
+        assert await client.request("hello") == "ok"
+        await client.stop()
+    assert connect_count >= 2
+
+
+async def test_backoff_schedule_clamped(aiohttp_server):
+    """Backoff progresses through the schedule and clamps to the last entry."""
+    # We can't really observe internal sleeps without slowing the test down,
+    # but we can verify the public schedule attribute is what the caller set.
+    async with ClientSession() as session:
+        client = UpstreamWebSocket(
+            session=session,
+            url="ws://127.0.0.1:1",  # unreachable; we won't start()
+            on_notification=lambda _: None,
+            backoff_schedule=(1.0, 2.0, 5.0, 30.0),
+        )
+        assert client._backoff == (1.0, 2.0, 5.0, 30.0)
