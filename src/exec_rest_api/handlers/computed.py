@@ -12,13 +12,19 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from aiohttp import web
+
+from exec_rest_api.abi_revert import is_out_of_gas, is_revert, revert_body
 from exec_rest_api.block_id import parse_block_id
 from exec_rest_api.encoding import (
     decimal_to_hex,
+    hex_to_int,
     map_address_lowercase,
     parse_input_int,
     parse_input_wei,
 )
+from exec_rest_api.errors import Problem, problem_response
+from exec_rest_api.upstream import UpstreamClient, UpstreamJsonRpcError
 
 _HEX_BYTES_RE: re.Pattern[str] = re.compile(r"^0x([0-9a-fA-F]{2})*$")
 
@@ -156,3 +162,107 @@ def call_request_to_rpc(body: dict[str, Any]) -> tuple[dict[str, Any], str]:
         raise ValueError("`at` must be a string block identifier")
     at = parse_block_id(at_raw).to_rpc_param()
     return out, at
+
+
+# ── handlers ──────────────────────────────────────────────────────────────
+
+
+def _bad_request(path: str, detail: str) -> web.Response:
+    return problem_response(
+        Problem(
+            status=400,
+            type_slug="invalid-request",
+            title="Invalid request",
+            detail=detail,
+            instance=path,
+        )
+    )
+
+
+async def _read_call_request(
+    request: web.Request,
+) -> tuple[dict[str, Any], str] | web.Response:
+    try:
+        body = await request.json()
+    except (ValueError, TypeError):
+        return _bad_request(request.path, "request body must be valid JSON")
+    try:
+        return call_request_to_rpc(body)
+    except (ValueError, KeyError) as e:
+        return _bad_request(request.path, str(e))
+
+
+async def call(request: web.Request) -> web.Response:
+    parsed = await _read_call_request(request)
+    if isinstance(parsed, web.Response):
+        return parsed
+    rpc_body, at = parsed
+    upstream: UpstreamClient = request.app["upstream"]
+    try:
+        result = await upstream.call("eth_call", [rpc_body, at])
+    except UpstreamJsonRpcError as e:
+        if is_revert(e) or is_out_of_gas(e):
+            return web.json_response(revert_body(e))
+        raise
+    if not isinstance(result, str):
+        return problem_response(
+            Problem(
+                status=502,
+                type_slug="upstream-error",
+                title="Upstream error",
+                detail="eth_call returned non-string result",
+                instance=request.path,
+            )
+        )
+    return web.json_response({"data": result.lower()})
+
+
+async def gas_estimate(request: web.Request) -> web.Response:
+    parsed = await _read_call_request(request)
+    if isinstance(parsed, web.Response):
+        return parsed
+    rpc_body, at = parsed
+    upstream: UpstreamClient = request.app["upstream"]
+    try:
+        result = await upstream.call("eth_estimateGas", [rpc_body, at])
+    except UpstreamJsonRpcError as e:
+        if is_revert(e) or is_out_of_gas(e):
+            return web.json_response(revert_body(e))
+        raise
+    return web.json_response({"gas": hex_to_int(result)})
+
+
+async def access_list(request: web.Request) -> web.Response:
+    parsed = await _read_call_request(request)
+    if isinstance(parsed, web.Response):
+        return parsed
+    rpc_body, at = parsed
+    upstream: UpstreamClient = request.app["upstream"]
+    try:
+        result = await upstream.call("eth_createAccessList", [rpc_body, at])
+    except UpstreamJsonRpcError as e:
+        if is_revert(e) or is_out_of_gas(e):
+            return web.json_response(revert_body(e))
+        raise
+    out: dict[str, Any] = {
+        "accessList": [
+            {
+                "address": map_address_lowercase(entry["address"]),
+                "storageKeys": [k.lower() for k in entry.get("storageKeys", [])],
+            }
+            for entry in result.get("accessList", [])
+        ],
+        "gasUsed": hex_to_int(result["gasUsed"]),
+    }
+    if "error" in result and result["error"] is not None:
+        out["error"] = result["error"]
+    return web.json_response(out)
+
+
+def register_routes(app: web.Application) -> None:
+    app.router.add_post("/call", call)
+    app.router.add_post("/call/", call)
+    app.router.add_post("/gas-estimate", gas_estimate)
+    app.router.add_post("/gas-estimate/", gas_estimate)
+    app.router.add_post("/access-list", access_list)
+    app.router.add_post("/access-list/", access_list)
