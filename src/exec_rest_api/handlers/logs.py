@@ -142,6 +142,53 @@ async def _verify_cursor_boundary(
     return None
 
 
+def _validate_logfilter_address(value: Any) -> list[str] | str:
+    """Body-form address: single address string or array of addresses."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        try:
+            return [map_address_lowercase(value)]
+        except EncodingError as e:
+            return str(e)
+    if isinstance(value, list):
+        out: list[str] = []
+        for entry in value:
+            if not isinstance(entry, str):
+                return "address entries must be strings"
+            try:
+                out.append(map_address_lowercase(entry))
+            except EncodingError as e:
+                return str(e)
+        return out
+    return "address must be string or array of strings"
+
+
+def _validate_logfilter_topics(value: Any) -> list[Any] | str:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        return "topics must be an array"
+    out: list[Any] = []
+    for entry in value:
+        if entry is None:
+            out.append(None)
+        elif isinstance(entry, str):
+            if not _TOPIC_RE.fullmatch(entry):
+                return f"invalid topic: {entry!r}"
+            out.append(entry.lower())
+        elif isinstance(entry, list):
+            inner: list[str] = []
+            for t in entry:
+                if not isinstance(t, str) or not _TOPIC_RE.fullmatch(t):
+                    return f"invalid topic: {t!r}"
+                inner.append(t.lower())
+            out.append(inner)
+        else:
+            return f"invalid topic entry: {entry!r}"
+    return out
+
+
 async def get_logs(request: web.Request) -> web.Response:
     config = request.app["config"]
     upstream: UpstreamClient = request.app["upstream"]
@@ -229,5 +276,101 @@ async def get_logs(request: web.Request) -> web.Response:
     return web.json_response(rest_items, headers=headers)
 
 
+async def post_logs_search(request: web.Request) -> web.Response:
+    config = request.app["config"]
+    upstream: UpstreamClient = request.app["upstream"]
+    limit_raw = request.query.get("limit")
+    if limit_raw is not None:
+        try:
+            requested_limit = int(limit_raw)
+            if requested_limit < 1:
+                raise ValueError
+        except ValueError:
+            return _bad_request(
+                request.path, f"limit must be a positive integer, got {limit_raw!r}"
+            )
+    else:
+        requested_limit = config.default_page_size
+    limit = min(requested_limit, config.max_page_size)
+
+    cursor_raw = request.query.get("cursor")
+    if cursor_raw is not None:
+        try:
+            cursor = decode_cursor(cursor_raw)
+        except CursorError as e:
+            return _bad_request(request.path, f"invalid cursor: {e}")
+        reorg = await _verify_cursor_boundary(upstream, cursor, request.path)
+        if reorg is not None:
+            return reorg
+        filter_ = cursor.filter_
+        from_block = cursor.next_from_block
+        to_block = cursor.to_block
+        skip_until = cursor.last_log_index
+    else:
+        try:
+            body = await request.json()
+        except (ValueError, TypeError):
+            return _bad_request(request.path, "request body must be valid JSON")
+        if not isinstance(body, dict):
+            return _bad_request(request.path, "request body must be a JSON object")
+        # Validate address and topics before making any upstream calls
+        addresses = _validate_logfilter_address(body.get("address"))
+        if isinstance(addresses, str):
+            return _bad_request(request.path, addresses)
+        topics = _validate_logfilter_topics(body.get("topics"))
+        if isinstance(topics, str):
+            return _bad_request(request.path, topics)
+        try:
+            from_bid = parse_block_id(body.get("fromBlock", "earliest"))
+            to_bid = parse_block_id(body.get("toBlock", "latest"))
+        except BlockIdError as e:
+            return _bad_request(request.path, str(e))
+        from_block_resolved = await _resolve_block_id_to_number(upstream, from_bid)
+        to_block_resolved = await _resolve_block_id_to_number(upstream, to_bid)
+        if from_block_resolved is None or to_block_resolved is None:
+            return _bad_request(request.path, "fromBlock/toBlock could not be resolved")
+        from_block = from_block_resolved
+        to_block = to_block_resolved
+        if from_block > to_block:
+            return _bad_request(
+                request.path, f"fromBlock ({from_block}) must be <= toBlock ({to_block})"
+            )
+        filter_ = {}
+        if addresses:
+            filter_["address"] = addresses
+        if topics:
+            filter_["topics"] = topics
+        skip_until = -1
+
+    result = await fetch_logs_paginated(
+        upstream=upstream,
+        filter_=filter_,
+        from_block=from_block,
+        to_block=to_block,
+        limit=limit,
+        skip_until_log_index=skip_until,
+    )
+    rest_items = [log_from_rpc(log) for log in result.items]
+    headers = {"X-Page-Size": str(limit)}
+    if result.next_from_block is not None:
+        boundary_rpc = await upstream.call(
+            "eth_getBlockByNumber", [f"0x{result.next_from_block:x}", False]
+        )
+        if boundary_rpc is not None:
+            next_cursor = encode_cursor(
+                Cursor(
+                    next_from_block=result.next_from_block,
+                    last_log_index=result.last_log_index,
+                    to_block=to_block,
+                    boundary_block_hash=boundary_rpc["hash"].lower(),
+                    filter_=filter_,
+                )
+            )
+            headers["Link"] = f'</logs/search?cursor={next_cursor}>; rel="next"'
+    return web.json_response(rest_items, headers=headers)
+
+
 def register_routes(app: web.Application) -> None:
     add_get(app, "/logs", get_logs)
+    app.router.add_post("/logs/search", post_logs_search)
+    app.router.add_post("/logs/search/", post_logs_search)

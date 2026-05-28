@@ -305,3 +305,58 @@ async def test_logs_x_page_size_header_default(aiohttp_client):
     resp = await client.get("/logs?fromBlock=0&toBlock=10")
     assert resp.status == 200
     assert resp.headers["X-Page-Size"] == "500"
+
+
+async def test_post_logs_search_forwards_body_filter(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    # Calls in order:
+    #   eth_getBlockByNumber for fromBlock=earliest → returns block 0
+    #   eth_blockNumber for toBlock=latest → "0x10"
+    #   eth_getLogs → []
+    mock.call.side_effect = ["0x10", []]
+    client = await _build_client(aiohttp_client, mock)
+    resp = await client.post(
+        "/logs/search",
+        json={
+            "fromBlock": "0",
+            "toBlock": "latest",
+            "address": ["0x" + "11" * 20, "0x" + "22" * 20],
+            "topics": [
+                "0x" + "ab" * 32,
+                None,
+                ["0x" + "cc" * 32, "0x" + "dd" * 32],
+            ],
+        },
+    )
+    assert resp.status == 200
+    body = await resp.json()
+    assert body == []
+    # The eth_getLogs call should carry our filter
+    last_call = mock.call.call_args_list[-1]
+    args, _ = last_call
+    method, params = args
+    assert method == "eth_getLogs"
+    rpc_filter = params[0]
+    assert sorted(rpc_filter["address"]) == sorted(
+        ["0x" + "11" * 20, "0x" + "22" * 20]
+    )
+    assert rpc_filter["topics"][0] == "0x" + "ab" * 32
+    assert rpc_filter["topics"][1] is None
+    assert rpc_filter["topics"][2] == ["0x" + "cc" * 32, "0x" + "dd" * 32]
+
+
+async def test_post_logs_search_invalid_address_400(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    client = await _build_client(aiohttp_client, mock)
+    resp = await client.post("/logs/search", json={"address": ["bad"]})
+    assert resp.status == 400
+
+
+async def test_post_logs_search_invalid_topic_400(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    client = await _build_client(aiohttp_client, mock)
+    resp = await client.post(
+        "/logs/search",
+        json={"topics": ["nope"]},
+    )
+    assert resp.status == 400

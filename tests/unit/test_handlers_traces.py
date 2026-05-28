@@ -347,3 +347,38 @@ async def test_trace_raw_transaction_missing_raw_400(aiohttp_client):
         "/traces/raw-transaction", json={"tracers": ["trace"]}
     )
     assert resp.status == 400
+
+
+async def test_post_traces_search_forwards_filter(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    mock.call.side_effect = [
+        # eth_blockNumber for "latest" resolution
+        "0x10",
+    ]
+    # then trace_filter
+    mock.call.side_effect = [
+        "0x10",
+        [
+            {
+                "action": {},
+                "type": "call",
+                "subtraces": 0,
+                "traceAddress": [],
+                "transactionHash": "0x" + "aa" * 32,
+                "blockHash": "0x" + "bb" * 32,
+                "blockNumber": "0x10",
+            }
+        ],
+    ]
+    client = await _build_client(aiohttp_client, mock)
+    resp = await client.post(
+        "/traces/search",
+        json={
+            "fromBlock": "0",
+            "toBlock": "latest",
+            "fromAddress": ["0x" + "11" * 20],
+        },
+    )
+    assert resp.status == 200
+    body = await resp.json()
+    assert isinstance(body, list) and len(body) == 1

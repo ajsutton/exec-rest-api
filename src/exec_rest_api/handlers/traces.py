@@ -89,6 +89,22 @@ async def _resolve_block_id_to_number(upstream: UpstreamClient, raw: str) -> int
     return hex_to_int(rpc["number"])
 
 
+def _validate_address_list(value: Any) -> list[str] | str:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        return "address list must be an array"
+    out: list[str] = []
+    for a in value:
+        if not isinstance(a, str):
+            return "address entries must be strings"
+        try:
+            out.append(map_address_lowercase(a))
+        except EncodingError as e:
+            return str(e)
+    return out
+
+
 # ─── /traces (trace_filter, paginated) ────────────────────────────────────
 
 
@@ -283,6 +299,89 @@ async def trace_raw_transaction_handler(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+async def post_traces_search(request: web.Request) -> web.Response:
+    config = request.app["config"]
+    upstream: UpstreamClient = request.app["upstream"]
+    limit_raw = request.query.get("limit")
+    if limit_raw is not None:
+        try:
+            requested_limit = int(limit_raw)
+            if requested_limit < 1:
+                raise ValueError
+        except ValueError:
+            return _bad_request(
+                request.path, f"limit must be a positive integer, got {limit_raw!r}"
+            )
+    else:
+        requested_limit = config.default_page_size
+    limit = min(requested_limit, config.max_page_size)
+
+    cursor_raw = request.query.get("cursor")
+    if cursor_raw is not None:
+        try:
+            cursor = decode_trace_cursor(cursor_raw)
+        except CursorError as e:
+            return _bad_request(request.path, f"invalid cursor: {e}")
+        filter_ = cursor.filter_
+        from_block = cursor.from_block
+        to_block = cursor.to_block
+        after = cursor.after
+    else:
+        try:
+            body = await request.json()
+        except (ValueError, TypeError):
+            return _bad_request(request.path, "request body must be valid JSON")
+        if not isinstance(body, dict):
+            return _bad_request(request.path, "request body must be a JSON object")
+        try:
+            from_block = await _resolve_block_id_to_number(
+                upstream, str(body.get("fromBlock", "earliest"))
+            )
+            to_block = await _resolve_block_id_to_number(
+                upstream, str(body.get("toBlock", "latest"))
+            )
+        except BlockIdError as e:
+            return _bad_request(request.path, str(e))
+        if from_block > to_block:
+            return _bad_request(
+                request.path, f"fromBlock ({from_block}) must be <= toBlock ({to_block})"
+            )
+        from_addrs = _validate_address_list(body.get("fromAddress"))
+        if isinstance(from_addrs, str):
+            return _bad_request(request.path, from_addrs)
+        to_addrs = _validate_address_list(body.get("toAddress"))
+        if isinstance(to_addrs, str):
+            return _bad_request(request.path, to_addrs)
+        filter_ = {}
+        if from_addrs:
+            filter_["fromAddress"] = from_addrs
+        if to_addrs:
+            filter_["toAddress"] = to_addrs
+        after = 0
+
+    rpc_filter = {
+        **filter_,
+        "fromBlock": f"0x{from_block:x}",
+        "toBlock": f"0x{to_block:x}",
+        "after": after,
+        "count": limit,
+    }
+    rpc = await upstream.call("trace_filter", [rpc_filter])
+    items = [trace_from_rpc(t) for t in (rpc or [])]
+    headers = {"X-Page-Size": str(limit)}
+    if len(items) >= limit:
+        next_cursor = encode_trace_cursor(
+            TraceCursor(
+                after=after + limit,
+                from_block=from_block,
+                to_block=to_block,
+                filter_=filter_,
+            )
+        )
+        headers["Link"] = f'</traces/search?cursor={next_cursor}>; rel="next"'
+    return web.json_response(items, headers=headers)
+
+
 def register_routes(app: web.Application) -> None:
     add_get(app, "/traces", get_traces)
     # Root trace path: /traces/{hash}/ has empty trace_address. The two-segment
@@ -295,3 +394,5 @@ def register_routes(app: web.Application) -> None:
     app.router.add_post("/traces/call-many/", trace_call_many_handler)
     app.router.add_post("/traces/raw-transaction", trace_raw_transaction_handler)
     app.router.add_post("/traces/raw-transaction/", trace_raw_transaction_handler)
+    app.router.add_post("/traces/search", post_traces_search)
+    app.router.add_post("/traces/search/", post_traces_search)
