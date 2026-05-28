@@ -1,6 +1,5 @@
 """Tests for ABI revert decoding + revert detection helpers."""
 
-import pytest
 
 from exec_rest_api.abi_revert import (
     decode_revert_data,
@@ -9,7 +8,6 @@ from exec_rest_api.abi_revert import (
     revert_body,
 )
 from exec_rest_api.upstream import UpstreamJsonRpcError
-
 
 # ── decode_revert_data ─────────────────────────────────────────────────────
 
