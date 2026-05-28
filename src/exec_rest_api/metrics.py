@@ -11,6 +11,7 @@ with zero observations are omitted from output.
 
 from __future__ import annotations
 
+import contextvars
 from typing import Final
 
 PROMETHEUS_CONTENT_TYPE: Final[str] = "text/plain; version=0.0.4; charset=utf-8"
@@ -18,6 +19,13 @@ PROMETHEUS_CONTENT_TYPE: Final[str] = "text/plain; version=0.0.4; charset=utf-8"
 # Prometheus default histogram bucket boundaries (seconds).
 _DEFAULT_BUCKETS: Final[tuple[float, ...]] = (
     0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
+)
+
+# Per-request accumulator of upstream JSON-RPC method names. Set by the metrics
+# middleware at request start; appended to by UpstreamClient's on_call observer;
+# read by server.py to populate the X-Upstream-Method response header.
+current_request_upstream_methods: contextvars.ContextVar[list[str] | None] = (
+    contextvars.ContextVar("current_request_upstream_methods", default=None)
 )
 
 
