@@ -26,6 +26,7 @@ from exec_rest_api.handlers.transactions import log_from_rpc, transaction_from_r
 from exec_rest_api.server import add_get
 from exec_rest_api.sse import format_event, format_retry, stream_with_heartbeat
 from exec_rest_api.subscriptions import GAP, StreamEvent, SubscriptionUnavailable
+from exec_rest_api.upstream_ws import UpstreamWsJsonRpcError
 
 logger = logging.getLogger("exec_rest_api.handlers.streams")
 
@@ -78,7 +79,7 @@ async def _run_stream(
             AsyncGenerator[StreamEvent, None],
             await subscriptions.subscribe(kind=kind, params=params),
         )
-    except SubscriptionUnavailable as exc:
+    except (SubscriptionUnavailable, UpstreamWsJsonRpcError) as exc:
         return problem_response(
             Problem(
                 status=503,
