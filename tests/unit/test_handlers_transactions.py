@@ -504,3 +504,12 @@ async def test_post_tx_debug_trace_empty_body_ok(aiohttp_client):
     resp = await client.post(f"/transactions/{h}/debug-trace", json={})
     assert resp.status == 200
     mock.call.assert_awaited_once_with("debug_traceTransaction", [h, {}])
+
+
+async def test_post_tx_debug_trace_empty_body_400(aiohttp_client):
+    """An empty request body fails JSON parsing — should return 400."""
+    mock = AsyncMock(spec=UpstreamClient)
+    client = await _build_client(aiohttp_client, mock)
+    h = "0x" + "aa" * 32
+    resp = await client.post(f"/transactions/{h}/debug-trace", data=b"")
+    assert resp.status == 400

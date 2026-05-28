@@ -355,8 +355,6 @@ async def post_debug_trace(request: web.Request) -> web.Response:
         body = await request.json()
     except (ValueError, TypeError):
         return _bad_request(request.path, "request body must be valid JSON")
-    if body is None:
-        body = {}
     if not isinstance(body, dict):
         return _bad_request(request.path, "request body must be a JSON object")
     upstream: UpstreamClient = request.app["upstream"]
