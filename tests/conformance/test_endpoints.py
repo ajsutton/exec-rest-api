@@ -9,6 +9,8 @@ POST endpoints and SSE streams arrive in later plans.
 
 from __future__ import annotations
 
+import pytest
+
 PRE_FUNDED = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
 
 
@@ -118,3 +120,70 @@ async def test_chain_reorged_is_problem(proxy_client, make_validator):
     assert resp.content_type == "application/problem+json"
     body = await resp.json()
     make_validator("#/components/schemas/Problem").validate(body)
+
+
+async def test_call_success_body(proxy_client, make_validator):
+    sender = PRE_FUNDED
+    resp = await proxy_client.post(
+        "/call",
+        json={"from": sender, "to": sender, "data": "0x"},
+    )
+    assert resp.status == 200
+    body = await resp.json()
+    make_validator("#/components/schemas/CallResult").validate(body)
+
+
+async def test_gas_estimate_body(proxy_client, make_validator):
+    sender = PRE_FUNDED
+    resp = await proxy_client.post(
+        "/gas-estimate",
+        json={"from": sender, "to": sender, "value": "1"},
+    )
+    assert resp.status == 200
+    body = await resp.json()
+    # Inline oneOf — try both
+    try:
+        make_validator("#/components/schemas/RevertedResult").validate(body)
+    except Exception:
+        # success branch
+        assert "gas" in body and isinstance(body["gas"], int)
+
+
+async def test_access_list_body(proxy_client, make_validator):
+    sender = PRE_FUNDED
+    resp = await proxy_client.post(
+        "/access-list",
+        json={"from": sender, "to": sender, "value": "1"},
+    )
+    assert resp.status == 200
+    body = await resp.json()
+    make_validator("#/components/schemas/AccessListResult").validate(body)
+
+
+async def test_utils_keccak256_body(proxy_client):
+    resp = await proxy_client.post("/utils/keccak256", json={"data": "0x"})
+    assert resp.status == 200
+    body = await resp.json()
+    assert "hash" in body
+    assert body["hash"].startswith("0x") and len(body["hash"]) == 66
+
+
+async def test_logs_search_body(proxy_client):
+    resp = await proxy_client.post(
+        "/logs/search",
+        json={"fromBlock": "0", "toBlock": "latest"},
+    )
+    assert resp.status == 200
+    body = await resp.json()
+    assert isinstance(body, list)
+
+
+async def test_block_rlp_representation(proxy_client):
+    resp = await proxy_client.get(
+        "/blocks/0", headers={"Accept": "application/vnd.ethereum.rlp"}
+    )
+    if resp.status == 501:
+        pytest.skip("anvil build lacks debug_getRawBlock")
+    assert resp.status == 200
+    assert resp.headers["Content-Type"] == "application/vnd.ethereum.rlp"
+    assert len(await resp.read()) > 0
