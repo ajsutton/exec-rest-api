@@ -7,7 +7,7 @@ from aiohttp import web
 from exec_rest_api.config import Config
 from exec_rest_api.encoding import hex_to_int
 from exec_rest_api.errors import Problem, problem_response
-from exec_rest_api.upstream import UpstreamClient, UpstreamError
+from exec_rest_api.upstream import UpstreamClient, UpstreamError, UpstreamJsonRpcError
 
 
 async def health(request: web.Request) -> web.Response:
@@ -22,7 +22,7 @@ async def ready(request: web.Request) -> web.Response:
     try:
         sync = await upstream.call("eth_syncing")
         block_hex = await upstream.call("eth_blockNumber")
-    except UpstreamError as e:
+    except (UpstreamError, UpstreamJsonRpcError) as e:
         return problem_response(
             Problem(
                 status=503,

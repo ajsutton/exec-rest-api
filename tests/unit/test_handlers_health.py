@@ -98,3 +98,17 @@ async def test_not_ready_when_upstream_unreachable(aiohttp_client):
     assert resp.status == 503
     body = await resp.json()
     assert body["type"].endswith("/upstream-unavailable")
+
+
+async def test_not_ready_when_upstream_jsonrpc_error(aiohttp_client):
+    from exec_rest_api.upstream import UpstreamJsonRpcError
+
+    mock = AsyncMock(spec=UpstreamClient)
+    mock.call.side_effect = UpstreamJsonRpcError(
+        code=-32601, message="method not found"
+    )
+    client = await _build_client(aiohttp_client, mock)
+    resp = await client.get("/health/ready")
+    assert resp.status == 503
+    body = await resp.json()
+    assert body["type"].endswith("/upstream-unavailable")

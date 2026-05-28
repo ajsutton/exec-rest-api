@@ -61,7 +61,11 @@ def _split_listen(listen: str) -> tuple[str, int]:
     host, _, port = listen.rpartition(":")
     if not host or not port:
         raise ConfigError(f"--listen must be host:port, got {listen!r}")
-    return host, int(port)
+    try:
+        port_int = int(port)
+    except ValueError as e:
+        raise ConfigError(f"--listen port must be numeric, got {port!r}") from e
+    return host, port_int
 
 
 async def _run(config: Config) -> None:
