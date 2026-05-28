@@ -176,8 +176,12 @@ async def test_start_raises_when_initial_connect_fails_without_reconnect():
             on_notification=lambda _: None,
             reconnect=False,
         )
+        # 10s timeout is generous: on Linux/macOS the kernel refuses the connect
+        # almost immediately, but Windows TCP retries can take several seconds
+        # before reporting failure. The point of the test is "doesn't hang
+        # forever," not "fails within 2s."
         with pytest.raises(UpstreamWsClosed):
-            await asyncio.wait_for(client.start(), timeout=2.0)
+            await asyncio.wait_for(client.start(), timeout=10.0)
         await client.stop()
 
 
