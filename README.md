@@ -7,17 +7,46 @@ negotiation for raw RLP, no hex quantities).
 
 ## Status
 
-`v0.4` — streams added. Endpoints: `/chain/*`, `/blocks/*`, `/accounts/*`,
+`v0.5` — feature-complete. Endpoints: `/chain/*`, `/blocks/*`, `/accounts/*`,
 `/transactions/*`, `/logs`, `/traces/*`, `/gas/*`, `/utils/keccak256`,
-`/health/*`, `/streams/{blocks,logs,pending-transactions,sync-status}`.
+`/health/*`, `/streams/{blocks,logs,pending-transactions,sync-status}`,
+`/metrics`.
 
 ## Install
+
+Four supported install methods. Pick the one that fits your environment:
+
+### `pipx` (recommended)
 
 ```sh
 pipx install exec-rest-api
 ```
 
-(or `pip install exec-rest-api` inside a virtualenv.)
+### `pip`
+
+```sh
+pip install exec-rest-api
+```
+
+### Single-file `.pyz`
+
+Download from the [latest release](https://github.com/ajsutton/exec-rest-api/releases/latest):
+
+```sh
+curl -LO https://github.com/ajsutton/exec-rest-api/releases/latest/download/exec-rest-api.pyz
+chmod +x exec-rest-api.pyz
+./exec-rest-api.pyz --upstream-http http://localhost:8545
+```
+
+### OCI container
+
+```sh
+docker run --rm -p 8080:8080 \
+  ghcr.io/ajsutton/exec-rest-api:latest \
+  --upstream-http http://host.docker.internal:8545
+```
+
+All release artefacts (wheel attestations, `.pyz`, OCI image) are signed via cosign keyless using GitHub Actions OIDC. Verification commands and a hardened systemd unit are in [`docs/operations.md`](docs/operations.md).
 
 ## Run
 
@@ -31,7 +60,7 @@ Or from a source checkout, without any setup steps:
 scripts/run.sh --upstream-http http://localhost:8545
 ```
 
-(`scripts/run.sh` creates `.venv/` and installs dependencies on first run, then re-uses them on subsequent invocations.)
+(`scripts/run.sh` creates `.venv/` and installs dependencies on first run.)
 
 Then:
 
@@ -41,7 +70,13 @@ curl http://127.0.0.1:8080/chain
 
 curl http://127.0.0.1:8080/health/ready
 # → { "ready": true, "upstreamReachable": true, "syncing": false, "blockNumber": 18234567 }
+
+curl http://127.0.0.1:8080/metrics
+# → exec_rest_api_requests_total{method="GET",path_template="/chain",status="200"} 1
+# → ...
 ```
+
+Each response carries `X-Request-ID`, `X-Upstream-Method` (the JSON-RPC method(s) invoked), and `X-Block-Height` (current chain head when known) — useful for ad-hoc debugging without touching `/metrics`.
 
 ## Configuration
 
@@ -73,6 +108,10 @@ pytest
 Integration tests require `anvil` (from
 [Foundry](https://book.getfoundry.sh/getting-started/installation)) on PATH;
 they are skipped otherwise.
+
+## Operations
+
+See [`docs/operations.md`](docs/operations.md) for systemd, container hardening, and signature verification.
 
 ## Design docs
 

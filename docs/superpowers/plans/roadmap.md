@@ -198,7 +198,7 @@ Stand up anvil with `--block-time 1`; subscribe via SSE to `/streams/blocks`, co
 
 ---
 
-## Plan 5 — Observability + release pipeline
+## Plan 5 — Observability + release pipeline `[DONE]`
 
 Operational polish: Prometheus metrics, structured-log refinement, OpenTelemetry-style request-ID propagation already in place, plus the full publish pipeline (PyPI / `.pyz` / OCI image, all signed via GitHub Actions OIDC).
 
