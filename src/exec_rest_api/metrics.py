@@ -79,7 +79,10 @@ class _Gauge:
     def render(self) -> list[str]:
         if not self._values:
             return []
-        out: list[str] = []
+        out = [
+            f"# HELP {self.name} {self.help_text}",
+            f"# TYPE {self.name} gauge",
+        ]
         for labels in sorted(self._values, key=lambda lbls: lbls):
             out.append(
                 f"{self.name}{_format_labels(labels)} {_format_number(self._values[labels])}"

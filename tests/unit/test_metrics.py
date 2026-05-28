@@ -118,9 +118,9 @@ def test_gauge_overwrites():
     m.set_chain_head_block(1)
     m.set_chain_head_block(2)
     out = m.render()
-    # Only the latest value appears, exactly once
-    assert out.count("exec_rest_api_chain_head_block ") == 1
-    assert "exec_rest_api_chain_head_block 2" in out
+    # Only the latest value appears, exactly once (no historical value)
+    assert "exec_rest_api_chain_head_block 1" not in out
+    assert out.count("exec_rest_api_chain_head_block 2") == 1
 
 
 def test_labelled_gauge_set():
@@ -138,6 +138,7 @@ def test_labelled_gauge_overwrites_per_labelset():
     m.set_sse_connections(stream="blocks", value=2)
     m.set_sse_connections(stream="logs", value=1)
     out = m.render()
+    assert 'exec_rest_api_sse_connections{stream="blocks"} 3' not in out
     assert 'exec_rest_api_sse_connections{stream="blocks"} 2' in out
     assert 'exec_rest_api_sse_connections{stream="logs"} 1' in out
 
