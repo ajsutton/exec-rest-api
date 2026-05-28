@@ -455,3 +455,4 @@ async def test_get_transaction_rlp_not_found_404(aiohttp_client):
         headers={"Accept": "application/vnd.ethereum.rlp"},
     )
     assert resp.status == 404
+    mock.call.assert_awaited_once_with("debug_getRawTransaction", ["0x" + "aa" * 32])

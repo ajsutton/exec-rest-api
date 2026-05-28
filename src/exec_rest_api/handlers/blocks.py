@@ -139,11 +139,13 @@ def _not_acceptable(path: str, supported: list[str]) -> web.Response:
     )
 
 
+def _hex_to_bytes(hex_str: str) -> bytes:
+    """Decode a hex string with or without `0x` prefix into bytes."""
+    return bytes.fromhex(hex_str[2:] if hex_str.startswith("0x") else hex_str)
+
+
 def _rlp_response(hex_body: str) -> web.Response:
-    return web.Response(
-        body=bytes.fromhex(hex_body[2:] if hex_body.startswith("0x") else hex_body),
-        content_type=CONTENT_TYPE_RLP,
-    )
+    return web.Response(body=_hex_to_bytes(hex_body), content_type=CONTENT_TYPE_RLP)
 
 
 # ─── handlers ─────────────────────────────────────────────────────────────
@@ -272,7 +274,7 @@ async def get_block_receipts(request: web.Request) -> web.Response:
             return _not_found(request.path, f"block {request.match_info['id']} not found")
         # debug_getRawReceipts returns an array of hex strings; concatenate raw bytes
         if isinstance(raw, list):
-            joined = b"".join(bytes.fromhex(r[2:]) for r in raw)
+            joined = b"".join(_hex_to_bytes(r) for r in raw)
             return web.Response(body=joined, content_type=CONTENT_TYPE_RLP)
         return _rlp_response(raw)
     rpc = await upstream.call("eth_getBlockReceipts", [bid.to_rpc_param()])

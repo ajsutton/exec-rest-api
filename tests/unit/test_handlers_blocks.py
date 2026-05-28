@@ -507,6 +507,21 @@ async def test_get_block_receipts_rlp_accept(aiohttp_client):
     mock.call.assert_awaited_once_with("debug_getRawReceipts", ["0x0"])
 
 
+async def test_get_block_receipts_rlp_accept_list_of_hex(aiohttp_client):
+    """Geth returns debug_getRawReceipts as an array of hex strings."""
+    mock = AsyncMock(spec=UpstreamClient)
+    mock.call.return_value = ["0xf6", "0xf7"]
+    client = await _build_client(aiohttp_client, mock)
+    resp = await client.get(
+        "/blocks/0/receipts",
+        headers={"Accept": "application/vnd.ethereum.rlp"},
+    )
+    assert resp.status == 200
+    assert resp.headers["Content-Type"] == "application/vnd.ethereum.rlp"
+    assert await resp.read() == bytes.fromhex("f6f7")
+    mock.call.assert_awaited_once_with("debug_getRawReceipts", ["0x0"])
+
+
 async def test_get_block_406_for_unsupported_accept(aiohttp_client):
     mock = AsyncMock(spec=UpstreamClient)
     client = await _build_client(aiohttp_client, mock)
