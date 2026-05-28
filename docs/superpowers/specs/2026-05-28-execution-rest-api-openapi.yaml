@@ -1,0 +1,1778 @@
+openapi: 3.1.0
+info:
+  title: Ethereum Execution REST API
+  version: 1.0.0
+  summary: REST + SSE facade in front of standard Ethereum execution client JSON-RPC.
+  description: |
+    A user-friendly REST and SSE API that maps onto the standard Ethereum execution
+    JSON-RPC surface (eth_*, net_*, web3_*, debug_*, trace_*). Implementable as a
+    stateless reverse proxy in front of any unmodified execution client.
+
+    Conventions:
+      - Numbers that always fit in IEEE-754 safely (block numbers, gas units, timestamps, indices)
+        are JSON numbers. Wei-denominated amounts are JSON strings of decimal digits to preserve precision.
+      - Hex (0x-prefixed) is used only for identifiers and bytes: hashes, addresses, calldata, signatures, RLP.
+      - Addresses output as EIP-55 checksummed; any case accepted on input.
+      - Block identifier accepts: latest|safe|finalized|pending|earliest | decimal number | 0x + 64 hex chars.
+      - Errors use application/problem+json (RFC 9457).
+      - Pagination uses RFC 8288 Link headers with opaque cursors.
+      - Reverts are not errors; they are successful responses with reverted=true.
+
+servers:
+  - url: https://{host}
+    variables:
+      host:
+        default: rpc.example.com
+
+tags:
+  - name: chain
+  - name: gas
+  - name: blocks
+  - name: accounts
+  - name: transactions
+  - name: logs
+  - name: traces
+  - name: computed-reads
+  - name: streams
+  - name: utilities
+  - name: health
+
+paths:
+
+  ## ── Chain & node ────────────────────────────────────────────────────────────
+
+  /chain:
+    get:
+      tags: [chain]
+      summary: Aggregated chain & node info
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChainInfo' }
+
+  /chain/id:
+    get:
+      tags: [chain]
+      summary: EIP-155 chain ID
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [chainId]
+                properties:
+                  chainId: { type: integer, format: int64, example: 1 }
+
+  /chain/sync-status:
+    get:
+      tags: [chain]
+      summary: Sync status
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SyncStatus' }
+
+  /chain/client:
+    get:
+      tags: [chain]
+      summary: Upstream client version string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [client]
+                properties:
+                  client: { type: string, example: "Geth/v1.13.5-stable-916d6a44/linux-amd64/go1.21.4" }
+
+  /chain/peers:
+    get:
+      tags: [chain]
+      summary: Peer count and listening state
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [peerCount, listening]
+                properties:
+                  peerCount: { type: integer, example: 35 }
+                  listening: { type: boolean, example: true }
+
+  ## ── Gas & fees ──────────────────────────────────────────────────────────────
+
+  /gas/price:
+    get:
+      tags: [gas]
+      summary: Current gas price suggestion (eth_gasPrice)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [wei]
+                properties:
+                  wei: { $ref: '#/components/schemas/Wei' }
+
+  /gas/priority-fee:
+    get:
+      tags: [gas]
+      summary: Suggested max priority fee per gas (eth_maxPriorityFeePerGas)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [wei]
+                properties:
+                  wei: { $ref: '#/components/schemas/Wei' }
+
+  /gas/blob-base-fee:
+    get:
+      tags: [gas]
+      summary: Current blob base fee per gas (eth_blobBaseFee)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [wei]
+                properties:
+                  wei: { $ref: '#/components/schemas/Wei' }
+
+  /gas/fee-history:
+    get:
+      tags: [gas]
+      summary: Historical fee information (eth_feeHistory)
+      parameters:
+        - in: query
+          name: blockCount
+          required: true
+          schema: { type: integer, minimum: 1, maximum: 1024 }
+        - in: query
+          name: newest
+          schema: { $ref: '#/components/schemas/BlockId' }
+        - in: query
+          name: rewardPercentiles
+          description: Comma-separated list of percentiles in [0,100]
+          schema: { type: string, example: "10,25,50,75,90" }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FeeHistory' }
+
+  ## ── Blocks ──────────────────────────────────────────────────────────────────
+
+  /blocks/{id}:
+    get:
+      tags: [blocks]
+      summary: Get a block (with full transactions). Accept RLP for raw bytes.
+      parameters:
+        - $ref: '#/components/parameters/BlockIdPath'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Block' }
+            application/vnd.ethereum.rlp:
+              schema:
+                type: string
+                format: binary
+                description: Raw RLP-encoded block (debug_getRawBlock).
+        '404': { $ref: '#/components/responses/NotFound' }
+        '406': { $ref: '#/components/responses/NotAcceptable' }
+
+  /blocks/{id}/header:
+    get:
+      tags: [blocks]
+      summary: Get a block header (no transactions). Accept RLP for raw bytes.
+      parameters:
+        - $ref: '#/components/parameters/BlockIdPath'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BlockHeader' }
+            application/vnd.ethereum.rlp:
+              schema:
+                type: string
+                format: binary
+                description: Raw RLP-encoded header (debug_getRawHeader).
+        '404': { $ref: '#/components/responses/NotFound' }
+        '406': { $ref: '#/components/responses/NotAcceptable' }
+
+  /blocks/{id}/transactions:
+    get:
+      tags: [blocks]
+      summary: All transactions in a block
+      parameters:
+        - $ref: '#/components/parameters/BlockIdPath'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Transaction' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /blocks/{id}/transactions/{index}:
+    get:
+      tags: [blocks]
+      summary: Transaction by block and index
+      parameters:
+        - $ref: '#/components/parameters/BlockIdPath'
+        - in: path
+          name: index
+          required: true
+          schema: { type: integer, minimum: 0 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Transaction' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /blocks/{id}/transaction-count:
+    get:
+      tags: [blocks]
+      summary: Number of transactions in a block
+      parameters:
+        - $ref: '#/components/parameters/BlockIdPath'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [count]
+                properties:
+                  count: { type: integer, minimum: 0 }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /blocks/{id}/receipts:
+    get:
+      tags: [blocks]
+      summary: All receipts in a block. Accept RLP for raw bytes.
+      parameters:
+        - $ref: '#/components/parameters/BlockIdPath'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Receipt' }
+            application/vnd.ethereum.rlp:
+              schema:
+                type: string
+                format: binary
+                description: Raw RLP-encoded receipts (debug_getRawReceipts).
+        '404': { $ref: '#/components/responses/NotFound' }
+        '406': { $ref: '#/components/responses/NotAcceptable' }
+
+  /blocks/{id}/traces:
+    get:
+      tags: [traces]
+      summary: All traces for a block (trace_block)
+      parameters:
+        - $ref: '#/components/parameters/BlockIdPath'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Trace' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '501': { $ref: '#/components/responses/MethodNotSupportedByUpstream' }
+
+  /blocks/{id}/traces/replay:
+    post:
+      tags: [traces]
+      summary: Replay all txs in a block with chosen tracers (trace_replayBlockTransactions)
+      parameters:
+        - $ref: '#/components/parameters/BlockIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReplayTracersRequest' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ReplayResult' }
+        '501': { $ref: '#/components/responses/MethodNotSupportedByUpstream' }
+
+  /blocks/{id}/debug-traces:
+    post:
+      tags: [traces]
+      summary: debug_traceBlock with tracer config
+      parameters:
+        - $ref: '#/components/parameters/BlockIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DebugTracerConfig' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/DebugTraceResult' }
+        '501': { $ref: '#/components/responses/MethodNotSupportedByUpstream' }
+
+  ## ── Accounts ────────────────────────────────────────────────────────────────
+
+  /accounts/{addr}:
+    get:
+      tags: [accounts]
+      summary: Aggregated account state (balance + nonce + has-code)
+      parameters:
+        - $ref: '#/components/parameters/AddressPath'
+        - $ref: '#/components/parameters/AtQuery'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountSummary' }
+
+  /accounts/{addr}/balance:
+    get:
+      tags: [accounts]
+      summary: Account balance in wei (eth_getBalance)
+      parameters:
+        - $ref: '#/components/parameters/AddressPath'
+        - $ref: '#/components/parameters/AtQuery'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [wei]
+                properties:
+                  wei: { $ref: '#/components/schemas/Wei' }
+
+  /accounts/{addr}/nonce:
+    get:
+      tags: [accounts]
+      summary: Account nonce (eth_getTransactionCount)
+      parameters:
+        - $ref: '#/components/parameters/AddressPath'
+        - $ref: '#/components/parameters/AtQuery'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [nonce]
+                properties:
+                  nonce: { type: integer, format: int64, minimum: 0 }
+
+  /accounts/{addr}/code:
+    get:
+      tags: [accounts]
+      summary: Account code (eth_getCode)
+      parameters:
+        - $ref: '#/components/parameters/AddressPath'
+        - $ref: '#/components/parameters/AtQuery'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [code]
+                properties:
+                  code: { $ref: '#/components/schemas/HexBytes' }
+
+  /accounts/{addr}/storage/{slot}:
+    get:
+      tags: [accounts]
+      summary: Storage slot value (eth_getStorageAt)
+      parameters:
+        - $ref: '#/components/parameters/AddressPath'
+        - in: path
+          name: slot
+          required: true
+          schema:
+            oneOf:
+              - { type: string, pattern: '^0x[0-9a-fA-F]{1,64}$' }
+              - { type: string, pattern: '^[0-9]+$' }
+        - $ref: '#/components/parameters/AtQuery'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [value]
+                properties:
+                  value: { $ref: '#/components/schemas/Hash32' }
+
+  /accounts/{addr}/proof:
+    get:
+      tags: [accounts]
+      summary: Merkle-Patricia proof (eth_getProof)
+      parameters:
+        - $ref: '#/components/parameters/AddressPath'
+        - $ref: '#/components/parameters/AtQuery'
+        - in: query
+          name: slots
+          description: Comma-separated list of storage slots to prove.
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountProof' }
+
+  /accounts/{addr}/proof/search:
+    post:
+      tags: [accounts]
+      summary: Merkle-Patricia proof with body filter (for long slot lists)
+      parameters:
+        - $ref: '#/components/parameters/AddressPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [slots]
+              properties:
+                at: { $ref: '#/components/schemas/BlockId' }
+                slots:
+                  type: array
+                  items: { type: string, pattern: '^0x[0-9a-fA-F]{1,64}$' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountProof' }
+
+  /accounts/{addr}/transaction-template:
+    get:
+      tags: [accounts]
+      summary: Suggested values for building an unsigned transaction
+      description: |
+        Composite helper. Returns the next nonce, the chain ID, and current fee suggestions
+        so the client can build and sign a transaction locally. The proxy never holds keys.
+      parameters:
+        - $ref: '#/components/parameters/AddressPath'
+        - $ref: '#/components/parameters/AtQuery'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TransactionTemplate' }
+
+  ## ── Transactions ────────────────────────────────────────────────────────────
+
+  /transactions:
+    post:
+      tags: [transactions]
+      summary: Submit a signed transaction (eth_sendRawTransaction)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [raw]
+              properties:
+                raw: { $ref: '#/components/schemas/HexBytes' }
+          application/vnd.ethereum.rlp:
+            schema:
+              type: string
+              format: binary
+              description: Raw RLP of the signed transaction.
+      responses:
+        '202':
+          description: Accepted into the mempool.
+          headers:
+            Location:
+              description: URI of the submitted transaction
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [hash]
+                properties:
+                  hash: { $ref: '#/components/schemas/Hash32' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '422': { $ref: '#/components/responses/TransactionRejected' }
+
+  /transactions/{hash}:
+    get:
+      tags: [transactions]
+      summary: Get transaction by hash. Accept RLP for raw bytes.
+      parameters:
+        - $ref: '#/components/parameters/TxHashPath'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Transaction' }
+            application/vnd.ethereum.rlp:
+              schema:
+                type: string
+                format: binary
+                description: Raw RLP-encoded transaction (debug_getRawTransaction).
+        '404': { $ref: '#/components/responses/NotFound' }
+        '406': { $ref: '#/components/responses/NotAcceptable' }
+
+  /transactions/{hash}/receipt:
+    get:
+      tags: [transactions]
+      summary: Transaction receipt
+      parameters:
+        - $ref: '#/components/parameters/TxHashPath'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Receipt' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /transactions/{hash}/trace:
+    get:
+      tags: [traces]
+      summary: Parity-style trace for a transaction (trace_transaction)
+      parameters:
+        - $ref: '#/components/parameters/TxHashPath'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Trace' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '501': { $ref: '#/components/responses/MethodNotSupportedByUpstream' }
+
+  /transactions/{hash}/trace/replay:
+    post:
+      tags: [traces]
+      summary: Replay a transaction with chosen tracers (trace_replayTransaction)
+      parameters:
+        - $ref: '#/components/parameters/TxHashPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReplayTracersRequest' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReplayResult' }
+        '501': { $ref: '#/components/responses/MethodNotSupportedByUpstream' }
+
+  /transactions/{hash}/debug-trace:
+    post:
+      tags: [traces]
+      summary: debug_traceTransaction with tracer config
+      parameters:
+        - $ref: '#/components/parameters/TxHashPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DebugTracerConfig' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DebugTraceResult' }
+        '501': { $ref: '#/components/responses/MethodNotSupportedByUpstream' }
+
+  ## ── Logs ────────────────────────────────────────────────────────────────────
+
+  /logs:
+    get:
+      tags: [logs]
+      summary: Get logs (eth_getLogs). Paginated.
+      parameters:
+        - in: query
+          name: fromBlock
+          schema: { $ref: '#/components/schemas/BlockId' }
+        - in: query
+          name: toBlock
+          schema: { $ref: '#/components/schemas/BlockId' }
+        - in: query
+          name: address
+          description: Comma-separated list of addresses.
+          schema: { type: string }
+        - in: query
+          name: topic0
+          schema: { $ref: '#/components/schemas/Topic' }
+        - in: query
+          name: topic1
+          schema: { $ref: '#/components/schemas/Topic' }
+        - in: query
+          name: topic2
+          schema: { $ref: '#/components/schemas/Topic' }
+        - in: query
+          name: topic3
+          schema: { $ref: '#/components/schemas/Topic' }
+        - $ref: '#/components/parameters/LimitQuery'
+        - $ref: '#/components/parameters/CursorQuery'
+      responses:
+        '200':
+          description: OK
+          headers:
+            Link:
+              description: RFC 8288 Link header; `rel="next"` if more pages.
+              schema: { type: string }
+            X-Page-Size: { schema: { type: integer } }
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Log' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '409': { $ref: '#/components/responses/ChainReorged' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+
+  /logs/search:
+    post:
+      tags: [logs]
+      summary: Get logs with a complex filter body (eth_getLogs). Paginated.
+      parameters:
+        - $ref: '#/components/parameters/LimitQuery'
+        - $ref: '#/components/parameters/CursorQuery'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LogFilter' }
+      responses:
+        '200':
+          description: OK
+          headers:
+            Link: { schema: { type: string } }
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Log' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '409': { $ref: '#/components/responses/ChainReorged' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+
+  ## ── Computed reads ─────────────────────────────────────────────────────────
+
+  /call:
+    post:
+      tags: [computed-reads]
+      summary: Execute a call against current or historical state (eth_call)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CallRequest' }
+      responses:
+        '200':
+          description: OK (including reverts)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CallResult' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+
+  /gas-estimate:
+    post:
+      tags: [computed-reads]
+      summary: Estimate gas for a transaction (eth_estimateGas)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CallRequest' }
+      responses:
+        '200':
+          description: OK (including reverts in body)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    required: [gas]
+                    properties:
+                      gas: { type: integer, format: int64 }
+                  - $ref: '#/components/schemas/RevertedResult'
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+
+  /access-list:
+    post:
+      tags: [computed-reads]
+      summary: Create an EIP-2930 access list (eth_createAccessList)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CallRequest' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessListResult' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+
+  /simulate:
+    post:
+      tags: [computed-reads]
+      summary: Multi-call / multi-block simulation (eth_simulateV1)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SimulateRequest' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SimulateResult' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '501': { $ref: '#/components/responses/MethodNotSupportedByUpstream' }
+
+  /traces/call:
+    post:
+      tags: [traces]
+      summary: Trace a call (trace_call)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TraceCallRequest' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReplayResult' }
+        '501': { $ref: '#/components/responses/MethodNotSupportedByUpstream' }
+
+  /traces/call-many:
+    post:
+      tags: [traces]
+      summary: Trace many calls in sequence (trace_callMany)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [calls]
+              properties:
+                at: { $ref: '#/components/schemas/BlockId' }
+                tracers:
+                  type: array
+                  items: { type: string, enum: [trace, vmTrace, stateDiff] }
+                calls:
+                  type: array
+                  items: { $ref: '#/components/schemas/CallRequest' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ReplayResult' }
+        '501': { $ref: '#/components/responses/MethodNotSupportedByUpstream' }
+
+  /traces/raw-transaction:
+    post:
+      tags: [traces]
+      summary: Trace a raw, never-submitted transaction (trace_rawTransaction)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [raw, tracers]
+              properties:
+                raw: { $ref: '#/components/schemas/HexBytes' }
+                tracers:
+                  type: array
+                  items: { type: string, enum: [trace, vmTrace, stateDiff] }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReplayResult' }
+        '501': { $ref: '#/components/responses/MethodNotSupportedByUpstream' }
+
+  /debug-traces/call:
+    post:
+      tags: [traces]
+      summary: debug_traceCall with tracer config
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [call]
+              properties:
+                at: { $ref: '#/components/schemas/BlockId' }
+                call: { $ref: '#/components/schemas/CallRequest' }
+                tracer: { $ref: '#/components/schemas/DebugTracerConfig' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DebugTraceResult' }
+        '501': { $ref: '#/components/responses/MethodNotSupportedByUpstream' }
+
+  /traces:
+    get:
+      tags: [traces]
+      summary: Query traces by range and address (trace_filter). Paginated.
+      parameters:
+        - in: query
+          name: fromBlock
+          schema: { $ref: '#/components/schemas/BlockId' }
+        - in: query
+          name: toBlock
+          schema: { $ref: '#/components/schemas/BlockId' }
+        - in: query
+          name: fromAddress
+          description: Comma-separated list of from addresses.
+          schema: { type: string }
+        - in: query
+          name: toAddress
+          description: Comma-separated list of to addresses.
+          schema: { type: string }
+        - $ref: '#/components/parameters/LimitQuery'
+        - $ref: '#/components/parameters/CursorQuery'
+      responses:
+        '200':
+          description: OK
+          headers:
+            Link: { schema: { type: string } }
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Trace' }
+        '501': { $ref: '#/components/responses/MethodNotSupportedByUpstream' }
+
+  /traces/search:
+    post:
+      tags: [traces]
+      summary: Query traces with a complex filter body (trace_filter). Paginated.
+      parameters:
+        - $ref: '#/components/parameters/LimitQuery'
+        - $ref: '#/components/parameters/CursorQuery'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TraceFilter' }
+      responses:
+        '200':
+          description: OK
+          headers:
+            Link: { schema: { type: string } }
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Trace' }
+        '501': { $ref: '#/components/responses/MethodNotSupportedByUpstream' }
+
+  /traces/{txHash}/{traceAddress}:
+    get:
+      tags: [traces]
+      summary: Get a specific trace by tx hash and trace address path (trace_get)
+      parameters:
+        - $ref: '#/components/parameters/TxHashPath'
+        - in: path
+          name: traceAddress
+          required: true
+          description: Comma-separated trace address path (e.g. "0,1,2") or empty for root.
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Trace' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  ## ── Streams (SSE) ──────────────────────────────────────────────────────────
+
+  /streams/blocks:
+    get:
+      tags: [streams]
+      summary: SSE stream of new block headers (eth_subscribe("newHeads"))
+      responses:
+        '200':
+          description: Stream opened.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: SSE stream. event=block, id=blockNumber, data=BlockHeader JSON.
+
+  /streams/logs:
+    get:
+      tags: [streams]
+      summary: SSE stream of logs (eth_subscribe("logs", filter))
+      parameters:
+        - in: query
+          name: address
+          description: Comma-separated list of addresses to filter.
+          schema: { type: string }
+        - in: query
+          name: topic0
+          schema: { $ref: '#/components/schemas/Topic' }
+        - in: query
+          name: topic1
+          schema: { $ref: '#/components/schemas/Topic' }
+        - in: query
+          name: topic2
+          schema: { $ref: '#/components/schemas/Topic' }
+        - in: query
+          name: topic3
+          schema: { $ref: '#/components/schemas/Topic' }
+        - in: query
+          name: fromBlock
+          description: Start replay from this block (default: live only).
+          schema: { $ref: '#/components/schemas/BlockId' }
+      responses:
+        '200':
+          description: Stream opened.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: SSE stream. event=log, id="<blockNumber>-<logIndex>", data=Log JSON.
+
+  /streams/pending-transactions:
+    get:
+      tags: [streams]
+      summary: SSE stream of new pending transactions
+      parameters:
+        - in: query
+          name: full
+          description: If true and supported by upstream, emit full transaction objects.
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: Stream opened.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: SSE stream. event=pending-transaction.
+
+  /streams/sync-status:
+    get:
+      tags: [streams]
+      summary: SSE stream of sync status changes (eth_subscribe("syncing"))
+      responses:
+        '200':
+          description: Stream opened.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: SSE stream. event=sync-status, data=SyncStatus JSON.
+
+  ## ── Utilities & operational ────────────────────────────────────────────────
+
+  /utils/keccak256:
+    post:
+      tags: [utilities]
+      summary: Keccak-256 hash (web3_sha3)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [data]
+              properties:
+                data: { $ref: '#/components/schemas/HexBytes' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [hash]
+                properties:
+                  hash: { $ref: '#/components/schemas/Hash32' }
+
+  /health:
+    get:
+      tags: [health]
+      summary: Liveness (no upstream calls)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, example: "ok" }
+
+  /health/ready:
+    get:
+      tags: [health]
+      summary: Readiness (upstream reachable; sync within threshold)
+      responses:
+        '200':
+          description: Ready
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ready]
+                properties:
+                  ready: { type: boolean }
+                  upstreamReachable: { type: boolean }
+                  syncing: { type: boolean }
+                  blockNumber: { type: integer }
+        '503':
+          description: Not ready
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+## ── Components ────────────────────────────────────────────────────────────────
+
+components:
+
+  parameters:
+
+    BlockIdPath:
+      in: path
+      name: id
+      required: true
+      schema: { $ref: '#/components/schemas/BlockId' }
+
+    AddressPath:
+      in: path
+      name: addr
+      required: true
+      schema: { $ref: '#/components/schemas/Address' }
+
+    TxHashPath:
+      in: path
+      name: hash
+      required: true
+      schema: { $ref: '#/components/schemas/Hash32' }
+
+    AtQuery:
+      in: query
+      name: at
+      description: Block context for state read (defaults to `latest`).
+      schema: { $ref: '#/components/schemas/BlockId' }
+
+    LimitQuery:
+      in: query
+      name: limit
+      description: Max items per page. Server may return fewer. Clamped to 10000.
+      schema: { type: integer, minimum: 1, maximum: 10000, default: 1000 }
+
+    CursorQuery:
+      in: query
+      name: cursor
+      description: Opaque cursor from a prior response's `Link: rel="next"`. When set, all other filter params are ignored.
+      schema: { type: string }
+
+  responses:
+
+    NotFound:
+      description: Resource not found.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+
+    InvalidRequest:
+      description: Malformed input.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+
+    NotAcceptable:
+      description: Requested representation not supported for this resource.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+
+    PayloadTooLarge:
+      description: Result set exceeds caps; narrow the filter.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+
+    ChainReorged:
+      description: Cursor's chain context no longer canonical; restart the query.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+
+    TransactionRejected:
+      description: Mempool rejected the transaction.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+
+    MethodNotSupportedByUpstream:
+      description: Upstream client does not implement the underlying JSON-RPC method.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+
+  schemas:
+
+    BlockId:
+      description: |
+        Accepts: `latest`, `safe`, `finalized`, `pending`, `earliest`, a decimal block number,
+        or a 0x-prefixed 32-byte block hash. Hex-encoded block numbers are not accepted.
+      oneOf:
+        - { type: string, enum: [latest, safe, finalized, pending, earliest] }
+        - { type: integer, minimum: 0 }
+        - { type: string, pattern: '^[0-9]+$' }
+        - { type: string, pattern: '^0x[0-9a-fA-F]{64}$' }
+
+    Address:
+      type: string
+      pattern: '^0x[0-9a-fA-F]{40}$'
+      description: 20-byte address; EIP-55 checksummed on output, any case accepted on input.
+      example: "0x1234567890AbcdEF1234567890aBcdef12345678"
+
+    Hash32:
+      type: string
+      pattern: '^0x[0-9a-fA-F]{64}$'
+      description: 32-byte hash, lowercase 0x-prefixed.
+
+    Topic:
+      type: string
+      pattern: '^0x[0-9a-fA-F]{64}$'
+
+    HexBytes:
+      type: string
+      pattern: '^0x([0-9a-fA-F]{2})*$'
+      description: Arbitrary-length byte string, lowercase 0x-prefixed.
+
+    Wei:
+      type: string
+      pattern: '^[0-9]+$'
+      description: Wei amount as a decimal string (preserves precision beyond 2^53).
+
+    ChainInfo:
+      type: object
+      required: [chainId, networkId, client, blockNumber, syncing]
+      properties:
+        chainId: { type: integer, format: int64 }
+        networkId: { type: string }
+        client: { type: string }
+        blockNumber: { type: integer, format: int64 }
+        syncing: { $ref: '#/components/schemas/SyncStatus' }
+
+    SyncStatus:
+      oneOf:
+        - type: object
+          required: [syncing]
+          properties:
+            syncing: { type: boolean, enum: [false] }
+        - type: object
+          required: [syncing, startingBlock, currentBlock, highestBlock]
+          properties:
+            syncing: { type: boolean, enum: [true] }
+            startingBlock: { type: integer, format: int64 }
+            currentBlock: { type: integer, format: int64 }
+            highestBlock: { type: integer, format: int64 }
+
+    FeeHistory:
+      type: object
+      required: [oldestBlock, baseFeePerGas, gasUsedRatio]
+      properties:
+        oldestBlock: { type: integer, format: int64 }
+        baseFeePerGas:
+          type: array
+          items: { $ref: '#/components/schemas/Wei' }
+        gasUsedRatio:
+          type: array
+          items: { type: number, format: double }
+        reward:
+          type: array
+          items:
+            type: array
+            items: { $ref: '#/components/schemas/Wei' }
+        baseFeePerBlobGas:
+          type: array
+          items: { $ref: '#/components/schemas/Wei' }
+        blobGasUsedRatio:
+          type: array
+          items: { type: number, format: double }
+
+    BlockHeader:
+      type: object
+      required:
+        - number
+        - hash
+        - parentHash
+        - stateRoot
+        - transactionsRoot
+        - receiptsRoot
+        - logsBloom
+        - gasUsed
+        - gasLimit
+        - timestamp
+        - miner
+        - difficulty
+        - totalDifficulty
+        - extraData
+        - mixHash
+        - nonce
+        - size
+      properties:
+        number: { type: integer, format: int64 }
+        hash: { $ref: '#/components/schemas/Hash32' }
+        parentHash: { $ref: '#/components/schemas/Hash32' }
+        stateRoot: { $ref: '#/components/schemas/Hash32' }
+        transactionsRoot: { $ref: '#/components/schemas/Hash32' }
+        receiptsRoot: { $ref: '#/components/schemas/Hash32' }
+        logsBloom: { $ref: '#/components/schemas/HexBytes' }
+        gasUsed: { type: integer, format: int64 }
+        gasLimit: { type: integer, format: int64 }
+        timestamp: { type: integer, format: int64 }
+        miner: { $ref: '#/components/schemas/Address' }
+        difficulty: { $ref: '#/components/schemas/Wei' }
+        totalDifficulty: { $ref: '#/components/schemas/Wei' }
+        extraData: { $ref: '#/components/schemas/HexBytes' }
+        mixHash: { $ref: '#/components/schemas/Hash32' }
+        nonce: { $ref: '#/components/schemas/HexBytes' }
+        size: { type: integer, format: int64 }
+        baseFeePerGas: { $ref: '#/components/schemas/Wei' }
+        withdrawalsRoot:
+          oneOf: [{ $ref: '#/components/schemas/Hash32' }, { type: 'null' }]
+        blobGasUsed:
+          oneOf: [{ type: integer, format: int64 }, { type: 'null' }]
+        excessBlobGas:
+          oneOf: [{ type: integer, format: int64 }, { type: 'null' }]
+        parentBeaconBlockRoot:
+          oneOf: [{ $ref: '#/components/schemas/Hash32' }, { type: 'null' }]
+
+    Block:
+      allOf:
+        - $ref: '#/components/schemas/BlockHeader'
+        - type: object
+          required: [transactions]
+          properties:
+            transactions:
+              type: array
+              items: { $ref: '#/components/schemas/Transaction' }
+            withdrawals:
+              type: array
+              items: { $ref: '#/components/schemas/Withdrawal' }
+
+    Withdrawal:
+      type: object
+      required: [index, validatorIndex, address, amount]
+      properties:
+        index: { type: integer, format: int64 }
+        validatorIndex: { type: integer, format: int64 }
+        address: { $ref: '#/components/schemas/Address' }
+        amount: { $ref: '#/components/schemas/Wei' }
+
+    Transaction:
+      type: object
+      description: |
+        Discriminated by `type`. Common fields are required; type-specific fields
+        are present only for the relevant types.
+      required:
+        - type
+        - hash
+        - from
+        - nonce
+        - gas
+        - input
+        - value
+        - r
+        - s
+      properties:
+        type:
+          type: string
+          enum: [legacy, access-list, dynamic-fee, blob]
+        hash: { $ref: '#/components/schemas/Hash32' }
+        blockHash:
+          oneOf: [{ $ref: '#/components/schemas/Hash32' }, { type: 'null' }]
+        blockNumber:
+          oneOf: [{ type: integer, format: int64 }, { type: 'null' }]
+        transactionIndex:
+          oneOf: [{ type: integer }, { type: 'null' }]
+        from: { $ref: '#/components/schemas/Address' }
+        to:
+          oneOf: [{ $ref: '#/components/schemas/Address' }, { type: 'null' }]
+        value: { $ref: '#/components/schemas/Wei' }
+        nonce: { type: integer, format: int64 }
+        gas: { type: integer, format: int64 }
+        input: { $ref: '#/components/schemas/HexBytes' }
+        chainId: { type: integer, format: int64 }
+        gasPrice: { $ref: '#/components/schemas/Wei' }
+        maxFeePerGas: { $ref: '#/components/schemas/Wei' }
+        maxPriorityFeePerGas: { $ref: '#/components/schemas/Wei' }
+        accessList:
+          type: array
+          items: { $ref: '#/components/schemas/AccessListEntry' }
+        maxFeePerBlobGas: { $ref: '#/components/schemas/Wei' }
+        blobVersionedHashes:
+          type: array
+          items: { $ref: '#/components/schemas/Hash32' }
+        v: { $ref: '#/components/schemas/HexBytes' }
+        r: { $ref: '#/components/schemas/HexBytes' }
+        s: { $ref: '#/components/schemas/HexBytes' }
+        yParity: { type: integer, enum: [0, 1] }
+
+    AccessListEntry:
+      type: object
+      required: [address, storageKeys]
+      properties:
+        address: { $ref: '#/components/schemas/Address' }
+        storageKeys:
+          type: array
+          items: { $ref: '#/components/schemas/Hash32' }
+
+    Receipt:
+      type: object
+      required:
+        - transactionHash
+        - transactionIndex
+        - blockHash
+        - blockNumber
+        - from
+        - cumulativeGasUsed
+        - gasUsed
+        - logsBloom
+        - logs
+        - status
+        - type
+      properties:
+        transactionHash: { $ref: '#/components/schemas/Hash32' }
+        transactionIndex: { type: integer }
+        blockHash: { $ref: '#/components/schemas/Hash32' }
+        blockNumber: { type: integer, format: int64 }
+        from: { $ref: '#/components/schemas/Address' }
+        to:
+          oneOf: [{ $ref: '#/components/schemas/Address' }, { type: 'null' }]
+        cumulativeGasUsed: { type: integer, format: int64 }
+        gasUsed: { type: integer, format: int64 }
+        effectiveGasPrice: { $ref: '#/components/schemas/Wei' }
+        contractAddress:
+          oneOf: [{ $ref: '#/components/schemas/Address' }, { type: 'null' }]
+        logs:
+          type: array
+          items: { $ref: '#/components/schemas/Log' }
+        logsBloom: { $ref: '#/components/schemas/HexBytes' }
+        status: { type: string, enum: [success, failed] }
+        type: { type: string, enum: [legacy, access-list, dynamic-fee, blob] }
+        blobGasUsed: { type: integer, format: int64 }
+        blobGasPrice: { $ref: '#/components/schemas/Wei' }
+
+    Log:
+      type: object
+      required:
+        - address
+        - topics
+        - data
+        - blockHash
+        - blockNumber
+        - transactionHash
+        - transactionIndex
+        - logIndex
+        - removed
+      properties:
+        address: { $ref: '#/components/schemas/Address' }
+        topics:
+          type: array
+          items: { $ref: '#/components/schemas/Topic' }
+        data: { $ref: '#/components/schemas/HexBytes' }
+        blockHash: { $ref: '#/components/schemas/Hash32' }
+        blockNumber: { type: integer, format: int64 }
+        transactionHash: { $ref: '#/components/schemas/Hash32' }
+        transactionIndex: { type: integer }
+        logIndex: { type: integer }
+        removed: { type: boolean }
+
+    LogFilter:
+      type: object
+      properties:
+        fromBlock: { $ref: '#/components/schemas/BlockId' }
+        toBlock: { $ref: '#/components/schemas/BlockId' }
+        address:
+          oneOf:
+            - { $ref: '#/components/schemas/Address' }
+            - type: array
+              items: { $ref: '#/components/schemas/Address' }
+        topics:
+          type: array
+          description: |
+            Array of 0..4 topic filters. Each entry is either a single topic, `null` (matches any),
+            or an array of topics (OR-match).
+          items:
+            oneOf:
+              - { $ref: '#/components/schemas/Topic' }
+              - type: 'null'
+              - type: array
+                items: { $ref: '#/components/schemas/Topic' }
+
+    CallRequest:
+      type: object
+      properties:
+        from: { $ref: '#/components/schemas/Address' }
+        to: { $ref: '#/components/schemas/Address' }
+        gas: { type: integer, format: int64 }
+        gasPrice: { $ref: '#/components/schemas/Wei' }
+        maxFeePerGas: { $ref: '#/components/schemas/Wei' }
+        maxPriorityFeePerGas: { $ref: '#/components/schemas/Wei' }
+        value: { $ref: '#/components/schemas/Wei' }
+        data: { $ref: '#/components/schemas/HexBytes' }
+        nonce: { type: integer, format: int64 }
+        accessList:
+          type: array
+          items: { $ref: '#/components/schemas/AccessListEntry' }
+        chainId: { type: integer, format: int64 }
+        at: { $ref: '#/components/schemas/BlockId' }
+        stateOverrides:
+          type: object
+          additionalProperties: { $ref: '#/components/schemas/StateOverride' }
+        blockOverrides: { $ref: '#/components/schemas/BlockOverrides' }
+
+    StateOverride:
+      type: object
+      properties:
+        balance: { $ref: '#/components/schemas/Wei' }
+        nonce: { type: integer, format: int64 }
+        code: { $ref: '#/components/schemas/HexBytes' }
+        state:
+          type: object
+          additionalProperties: { $ref: '#/components/schemas/Hash32' }
+        stateDiff:
+          type: object
+          additionalProperties: { $ref: '#/components/schemas/Hash32' }
+
+    BlockOverrides:
+      type: object
+      properties:
+        number: { type: integer, format: int64 }
+        timestamp: { type: integer, format: int64 }
+        gasLimit: { type: integer, format: int64 }
+        coinbase: { $ref: '#/components/schemas/Address' }
+        baseFeePerGas: { $ref: '#/components/schemas/Wei' }
+        difficulty: { $ref: '#/components/schemas/Wei' }
+        random: { $ref: '#/components/schemas/Hash32' }
+
+    CallResult:
+      oneOf:
+        - type: object
+          required: [data]
+          properties:
+            data: { $ref: '#/components/schemas/HexBytes' }
+        - $ref: '#/components/schemas/RevertedResult'
+
+    RevertedResult:
+      type: object
+      required: [reverted, data]
+      properties:
+        reverted: { type: boolean, enum: [true] }
+        data: { $ref: '#/components/schemas/HexBytes' }
+        reason:
+          oneOf: [{ type: string }, { type: 'null' }]
+        panicCode:
+          oneOf: [{ type: integer }, { type: 'null' }]
+        outOfGas: { type: boolean }
+
+    AccessListResult:
+      type: object
+      required: [accessList, gasUsed]
+      properties:
+        accessList:
+          type: array
+          items: { $ref: '#/components/schemas/AccessListEntry' }
+        gasUsed: { type: integer, format: int64 }
+        error: { type: string }
+
+    SimulateRequest:
+      type: object
+      required: [blockStateCalls]
+      properties:
+        blockStateCalls:
+          type: array
+          items:
+            type: object
+            properties:
+              blockOverrides: { $ref: '#/components/schemas/BlockOverrides' }
+              stateOverrides:
+                type: object
+                additionalProperties: { $ref: '#/components/schemas/StateOverride' }
+              calls:
+                type: array
+                items: { $ref: '#/components/schemas/CallRequest' }
+        traceTransfers: { type: boolean }
+        validation: { type: boolean }
+        returnFullTransactions: { type: boolean }
+        at: { $ref: '#/components/schemas/BlockId' }
+
+    SimulateResult:
+      type: array
+      items:
+        type: object
+        properties:
+          block: { $ref: '#/components/schemas/BlockHeader' }
+          calls:
+            type: array
+            items:
+              oneOf:
+                - type: object
+                  required: [returnData, gasUsed]
+                  properties:
+                    returnData: { $ref: '#/components/schemas/HexBytes' }
+                    gasUsed: { type: integer, format: int64 }
+                    logs:
+                      type: array
+                      items: { $ref: '#/components/schemas/Log' }
+                - $ref: '#/components/schemas/RevertedResult'
+
+    TransactionTemplate:
+      type: object
+      required: [nonce, chainId]
+      properties:
+        nonce: { type: integer, format: int64 }
+        chainId: { type: integer, format: int64 }
+        gasPrice: { $ref: '#/components/schemas/Wei' }
+        maxFeePerGas: { $ref: '#/components/schemas/Wei' }
+        maxPriorityFeePerGas: { $ref: '#/components/schemas/Wei' }
+        blobBaseFee: { $ref: '#/components/schemas/Wei' }
+
+    AccountSummary:
+      type: object
+      required: [address, balance, nonce, hasCode, delegatedTo]
+      properties:
+        address: { $ref: '#/components/schemas/Address' }
+        balance: { $ref: '#/components/schemas/Wei' }
+        nonce: { type: integer, format: int64 }
+        hasCode:
+          type: boolean
+          description: True if eth_getCode returns any non-empty bytecode (including an EIP-7702 delegation indicator).
+        codeHash: { $ref: '#/components/schemas/Hash32' }
+        delegatedTo:
+          description: |
+            For an EIP-7702-delegating EOA, the address whose code the EVM uses
+            when calling this account. Derived from `eth_getCode`: when the
+            returned bytecode is exactly 23 bytes long and starts with the
+            `0xef0100` magic prefix, the remaining 20 bytes are surfaced here.
+            `null` for non-delegating accounts (EOAs without delegation, or
+            ordinary contract accounts).
+          oneOf:
+            - { $ref: '#/components/schemas/Address' }
+            - { type: 'null' }
+
+    AccountProof:
+      type: object
+      required:
+        - address
+        - balance
+        - codeHash
+        - nonce
+        - storageHash
+        - accountProof
+        - storageProof
+      properties:
+        address: { $ref: '#/components/schemas/Address' }
+        balance: { $ref: '#/components/schemas/Wei' }
+        codeHash: { $ref: '#/components/schemas/Hash32' }
+        nonce: { type: integer, format: int64 }
+        storageHash: { $ref: '#/components/schemas/Hash32' }
+        accountProof:
+          type: array
+          items: { $ref: '#/components/schemas/HexBytes' }
+        storageProof:
+          type: array
+          items:
+            type: object
+            required: [key, value, proof]
+            properties:
+              key: { $ref: '#/components/schemas/Hash32' }
+              value: { $ref: '#/components/schemas/Hash32' }
+              proof:
+                type: array
+                items: { $ref: '#/components/schemas/HexBytes' }
+
+    Trace:
+      type: object
+      description: |
+        Parity-style trace entry. Multiple action types — `call`, `create`, `selfdestruct`, `reward`.
+      required: [action, type, subtraces, traceAddress, transactionHash, blockHash, blockNumber]
+      properties:
+        action:
+          type: object
+          additionalProperties: true
+        type: { type: string, enum: [call, create, suicide, reward] }
+        subtraces: { type: integer }
+        traceAddress:
+          type: array
+          items: { type: integer }
+        result:
+          type: object
+          additionalProperties: true
+        error: { type: string }
+        transactionHash: { $ref: '#/components/schemas/Hash32' }
+        transactionPosition: { type: integer }
+        blockHash: { $ref: '#/components/schemas/Hash32' }
+        blockNumber: { type: integer, format: int64 }
+
+    TraceFilter:
+      type: object
+      properties:
+        fromBlock: { $ref: '#/components/schemas/BlockId' }
+        toBlock: { $ref: '#/components/schemas/BlockId' }
+        fromAddress:
+          type: array
+          items: { $ref: '#/components/schemas/Address' }
+        toAddress:
+          type: array
+          items: { $ref: '#/components/schemas/Address' }
+
+    ReplayTracersRequest:
+      type: object
+      required: [tracers]
+      properties:
+        tracers:
+          type: array
+          items: { type: string, enum: [trace, vmTrace, stateDiff] }
+
+    ReplayResult:
+      type: object
+      properties:
+        output: { $ref: '#/components/schemas/HexBytes' }
+        stateDiff:
+          oneOf: [{ type: object }, { type: 'null' }]
+        trace:
+          oneOf:
+            - type: array
+              items: { $ref: '#/components/schemas/Trace' }
+            - type: 'null'
+        vmTrace:
+          oneOf: [{ type: object }, { type: 'null' }]
+        transactionHash: { $ref: '#/components/schemas/Hash32' }
+
+    TraceCallRequest:
+      type: object
+      required: [call, tracers]
+      properties:
+        call: { $ref: '#/components/schemas/CallRequest' }
+        tracers:
+          type: array
+          items: { type: string, enum: [trace, vmTrace, stateDiff] }
+        at: { $ref: '#/components/schemas/BlockId' }
+
+    DebugTracerConfig:
+      type: object
+      description: |
+        Mirrors Geth's debug_trace* tracer config. `tracer` selects a built-in
+        (callTracer, prestateTracer, 4byteTracer, etc.) or a JS tracer body.
+      properties:
+        tracer: { type: string, example: callTracer }
+        tracerConfig:
+          type: object
+          additionalProperties: true
+        timeout: { type: string, example: "5s" }
+        disableStack: { type: boolean }
+        disableStorage: { type: boolean }
+        disableMemory: { type: boolean }
+        enableReturnData: { type: boolean }
+
+    DebugTraceResult:
+      description: |
+        Tracer-defined object. callTracer returns nested call frames; prestateTracer returns
+        a state map; the default struct logger returns gas, returnValue, structLogs.
+      oneOf:
+        - type: object
+          additionalProperties: true
+        - type: array
+          items:
+            type: object
+            additionalProperties: true
+
+    Problem:
+      type: object
+      description: RFC 9457 Problem Details with Ethereum extensions.
+      required: [type, title, status]
+      properties:
+        type:
+          type: string
+          format: uri
+          example: "https://errors.ethereum-rest/transaction-rejected"
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+        code:
+          oneOf: [{ type: integer }, { type: 'null' }]
+          description: Upstream JSON-RPC error code if present.
+        data:
+          description: Upstream JSON-RPC error data if present.
