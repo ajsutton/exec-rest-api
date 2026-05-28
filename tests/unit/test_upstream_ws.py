@@ -166,6 +166,20 @@ async def test_notifications_dispatched(ws_server):
         await client.stop()
 
 
+async def test_start_raises_when_initial_connect_fails_without_reconnect():
+    """start() must not hang when reconnect=False and the URL is unreachable."""
+    async with ClientSession() as session:
+        client = UpstreamWebSocket(
+            session=session,
+            url="ws://127.0.0.1:1",  # unreachable
+            on_notification=lambda _: None,
+            reconnect=False,
+        )
+        with pytest.raises(UpstreamWsClosed):
+            await asyncio.wait_for(client.start(), timeout=2.0)
+        await client.stop()
+
+
 async def test_pending_requests_raise_on_close(ws_server):
     """If the WS closes while a request is in flight, the awaiting caller sees
     UpstreamWsClosed rather than hanging forever."""

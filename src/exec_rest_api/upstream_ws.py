@@ -14,6 +14,7 @@ reconnects directly; instead, `SubscriptionManager` is told via the
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import itertools
 import json
 import logging
@@ -76,11 +77,17 @@ class UpstreamWebSocket:
         self._task: asyncio.Task[None] | None = None
         self._connected_event = asyncio.Event()
         self._stopping = False
+        self._first_connect_error: Exception | None = None
 
     async def start(self) -> None:
-        """Start the read loop and wait for the first successful connect."""
+        """Start the read loop and wait for the first successful connect.
+
+        Raises UpstreamWsClosed if the first connect attempt fails and reconnect=False.
+        """
         self._task = asyncio.create_task(self._run_forever(), name="upstream_ws")
         await self._connected_event.wait()
+        if self._first_connect_error is not None:
+            raise UpstreamWsClosed(f"initial connect failed: {self._first_connect_error!r}")
 
     async def stop(self) -> None:
         self._stopping = True
@@ -88,10 +95,8 @@ class UpstreamWebSocket:
             await self._ws.close()
         if self._task is not None:
             self._task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._task
-            except asyncio.CancelledError:
-                pass
         self._fail_pending(UpstreamWsClosed("ws stopped"))
 
     @property
@@ -110,7 +115,7 @@ class UpstreamWebSocket:
         ws = self._ws
         assert ws is not None
         rid = next(self._id_counter)
-        future: asyncio.Future[Any] = asyncio.get_event_loop().create_future()
+        future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
         self._pending[rid] = future
         try:
             await ws.send_str(
@@ -138,11 +143,14 @@ class UpstreamWebSocket:
                 raise
             except Exception as exc:
                 logger.warning("upstream WS error: %r", exc)
+                if not self._connected_event.is_set():
+                    self._first_connect_error = exc
             finally:
                 self._ws = None
                 self._fail_pending(UpstreamWsClosed("ws disconnected"))
 
             if not self._reconnect or self._stopping:
+                self._connected_event.set()  # unblock start() either way
                 return
 
             delay = self._backoff[min(attempt, len(self._backoff) - 1)]
