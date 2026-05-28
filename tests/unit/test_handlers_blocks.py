@@ -3,6 +3,8 @@
 from typing import Any
 from unittest.mock import AsyncMock
 
+import pytest
+
 from exec_rest_api.config import Config
 from exec_rest_api.handlers.blocks import block_header_from_rpc, register_routes
 from exec_rest_api.server import create_app
@@ -89,6 +91,33 @@ def test_block_header_from_rpc_post_shanghai_fields():
     assert out["blobGasUsed"] == 0x20000
     assert out["excessBlobGas"] == 0x40000
     assert out["parentBeaconBlockRoot"] == "0x" + "88" * 32
+
+
+def test_block_header_from_rpc_synthetic_simulate_minimal():
+    """Synthetic simulate blocks may omit fields like nonce, mixHash, difficulty.
+
+    The converter should produce a valid BlockHeader with sensible defaults
+    rather than raising KeyError.
+    """
+    rpc = {
+        "number": "0x1",
+        "hash": "0x" + "aa" * 32,
+        # everything else missing
+    }
+    out = block_header_from_rpc(rpc)
+    assert out["number"] == 1
+    assert out["hash"] == "0x" + "aa" * 32
+    assert out["parentHash"] == "0x"
+    assert out["nonce"] == "0x"
+    assert out["difficulty"] == "0"
+    assert out["totalDifficulty"] == "0"
+    assert out["gasUsed"] == 0
+    assert out["timestamp"] == 0
+
+
+def test_block_header_from_rpc_missing_hash_raises():
+    with pytest.raises(KeyError):
+        block_header_from_rpc({"number": "0x1"})
 
 
 # ─── /blocks/{id} ─────────────────────────────────────────────────────────
@@ -570,3 +599,10 @@ async def test_post_block_debug_traces_by_hash(aiohttp_client):
     resp = await client.post(f"/blocks/{h}/debug-traces", json={})
     assert resp.status == 200
     mock.call.assert_awaited_once_with("debug_traceBlockByHash", [h, {}])
+
+
+async def test_post_block_debug_traces_empty_body_400(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    client = await _build_client(aiohttp_client, mock)
+    resp = await client.post("/blocks/100/debug-traces", data=b"")
+    assert resp.status == 400

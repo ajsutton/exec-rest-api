@@ -39,27 +39,42 @@ def block_header_from_rpc(rpc: dict[str, Any]) -> dict[str, Any]:
     """Convert a JSON-RPC block (full or summary) to a REST BlockHeader.
 
     Drops `transactions` and `withdrawals` — those belong on the full Block.
+    `number` and `hash` are required; all other header fields gracefully
+    default if absent (so synthetic simulate blocks don't 500).
     """
+    if "number" not in rpc or "hash" not in rpc:
+        raise KeyError("block header requires `number` and `hash`")
+
+    def _hex(key: str, default: str = "0x") -> str:
+        v = rpc.get(key)
+        return v.lower() if isinstance(v, str) else default
+
+    def _int(key: str, default: int = 0) -> int:
+        v = rpc.get(key)
+        return hex_to_int(v) if isinstance(v, str) else default
+
+    def _wei(key: str, default: str = "0") -> str:
+        v = rpc.get(key)
+        return wei_from_rpc(v) if isinstance(v, str) else default
+
     out: dict[str, Any] = {
         "number": hex_to_int(rpc["number"]),
         "hash": rpc["hash"].lower(),
-        "parentHash": rpc["parentHash"].lower(),
-        "stateRoot": rpc["stateRoot"].lower(),
-        "transactionsRoot": rpc["transactionsRoot"].lower(),
-        "receiptsRoot": rpc["receiptsRoot"].lower(),
-        "logsBloom": rpc["logsBloom"].lower(),
-        "gasUsed": hex_to_int(rpc["gasUsed"]),
-        "gasLimit": hex_to_int(rpc["gasLimit"]),
-        "timestamp": hex_to_int(rpc["timestamp"]),
-        "miner": map_address_lowercase(rpc["miner"]),
-        "difficulty": wei_from_rpc(rpc["difficulty"]),
-        "totalDifficulty": (
-            wei_from_rpc(rpc["totalDifficulty"]) if rpc.get("totalDifficulty") else "0"
-        ),
-        "extraData": rpc["extraData"].lower(),
-        "mixHash": rpc["mixHash"].lower(),
-        "nonce": rpc["nonce"].lower(),
-        "size": hex_to_int(rpc["size"]),
+        "parentHash": _hex("parentHash"),
+        "stateRoot": _hex("stateRoot"),
+        "transactionsRoot": _hex("transactionsRoot"),
+        "receiptsRoot": _hex("receiptsRoot"),
+        "logsBloom": _hex("logsBloom"),
+        "gasUsed": _int("gasUsed"),
+        "gasLimit": _int("gasLimit"),
+        "timestamp": _int("timestamp"),
+        "miner": map_address_lowercase(rpc["miner"]) if "miner" in rpc else "0x" + "00" * 20,
+        "difficulty": _wei("difficulty"),
+        "totalDifficulty": _wei("totalDifficulty"),
+        "extraData": _hex("extraData"),
+        "mixHash": _hex("mixHash"),
+        "nonce": _hex("nonce"),
+        "size": _int("size"),
     }
     if rpc.get("baseFeePerGas") is not None:
         out["baseFeePerGas"] = wei_from_rpc(rpc["baseFeePerGas"])
@@ -339,8 +354,6 @@ async def post_block_debug_traces(request: web.Request) -> web.Response:
         body = await request.json()
     except (ValueError, TypeError):
         return _bad_request(request.path, "request body must be valid JSON")
-    if body is None:
-        body = {}
     if not isinstance(body, dict):
         return _bad_request(request.path, "request body must be a JSON object")
     method = "debug_traceBlockByHash" if bid.is_hash() else "debug_traceBlockByNumber"
