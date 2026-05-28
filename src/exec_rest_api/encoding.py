@@ -65,14 +65,16 @@ def wei_to_rpc(value: str | int) -> str:
 # ── lenient input parsing ──────────────────────────────────────────────────
 
 def parse_input_int(value: object) -> int:
-    """Accept either a JSON number or a decimal string as an integer."""
+    """Accept either a JSON number or a decimal string as a non-negative integer."""
     if isinstance(value, bool):
         raise EncodingError(f"bool is not an int: {value!r}")
     if isinstance(value, int):
+        if value < 0:
+            raise EncodingError(f"expected non-negative int, got {value}")
         return value
     if isinstance(value, str) and _DECIMAL_RE.fullmatch(value):
         return int(value)
-    raise EncodingError(f"expected int or decimal string, got {value!r}")
+    raise EncodingError(f"expected non-negative int or decimal string, got {value!r}")
 
 
 def parse_input_wei(value: object) -> int:

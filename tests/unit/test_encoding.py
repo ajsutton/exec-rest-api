@@ -19,7 +19,6 @@ from exec_rest_api.encoding import (
     wei_to_rpc,
 )
 
-
 # ── hex ↔ int ──────────────────────────────────────────────────────────────
 
 def test_hex_to_int_zero():
@@ -122,6 +121,11 @@ def test_parse_input_int_from_hex_string_rejected():
 def test_parse_input_int_from_bool_rejected():
     with pytest.raises(EncodingError):
         parse_input_int(True)
+
+
+def test_parse_input_int_negative_int_rejected():
+    with pytest.raises(EncodingError):
+        parse_input_int(-1)
 
 
 def test_parse_input_wei_from_int():
