@@ -27,6 +27,7 @@ from exec_rest_api.handlers import (
     logs,
     traces,
     transactions,
+    utils_keccak,
 )
 from exec_rest_api.server import create_app
 from exec_rest_api.upstream import UpstreamClient
@@ -111,5 +112,6 @@ async def proxy_client(anvil_url, aiohttp_client):
         accounts.register_routes(app)
         logs.register_routes(app)
         traces.register_routes(app)
+        utils_keccak.register_routes(app)
         client = await aiohttp_client(app)
         yield client
