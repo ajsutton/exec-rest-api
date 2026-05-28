@@ -1,0 +1,169 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write     # create GitHub release
+  id-token: write     # OIDC for cosign + PyPI trusted publishing
+  packages: write     # push to ghcr.io
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-notes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Draft release with auto-generated notes (from PR titles)
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          name: ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+
+  pypi:
+    runs-on: ubuntu-latest
+    needs: release-notes
+    environment:
+      name: pypi
+      url: https://pypi.org/project/exec-rest-api/
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build sdist + wheel
+        run: |
+          pip install --upgrade pip build
+          python -m build
+      - name: Upload artefacts to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          tag_name: ${{ github.ref_name }}
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          attestations: true
+
+  pyz:
+    runs-on: ubuntu-latest
+    needs: release-notes
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install shiv
+        run: pip install --upgrade pip shiv
+      - name: Build .pyz
+        run: |
+          shiv -c exec-rest-api -p '/usr/bin/env python3' \
+               --reproducible \
+               -o exec-rest-api.pyz .
+      - name: Generate SHA256SUMS
+        run: |
+          sha256sum exec-rest-api.pyz > SHA256SUMS
+      - uses: sigstore/cosign-installer@v3
+      - name: Sign .pyz (cosign keyless)
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          cosign sign-blob --yes \
+            --output-signature exec-rest-api.pyz.sig \
+            --output-certificate exec-rest-api.pyz.crt \
+            exec-rest-api.pyz
+      - name: Sign SHA256SUMS (cosign keyless)
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          cosign sign-blob --yes \
+            --output-signature SHA256SUMS.sig \
+            --output-certificate SHA256SUMS.crt \
+            SHA256SUMS
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            exec-rest-api.pyz
+            exec-rest-api.pyz.sig
+            exec-rest-api.pyz.crt
+            SHA256SUMS
+            SHA256SUMS.sig
+            SHA256SUMS.crt
+          tag_name: ${{ github.ref_name }}
+
+  oci:
+    runs-on: ubuntu-latest
+    needs: release-notes
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Compute image tag (no leading "v" for OCI compatibility)
+        id: tag
+        run: echo "tag=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - name: Build + push (multi-arch)
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: true
+          sbom: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/exec-rest-api:${{ steps.tag.outputs.tag }}
+            ghcr.io/${{ github.repository_owner }}/exec-rest-api:latest
+      - uses: sigstore/cosign-installer@v3
+      - name: Sign image (cosign keyless)
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          cosign sign --yes \
+            ghcr.io/${{ github.repository_owner }}/exec-rest-api@${{ steps.build.outputs.digest }}
+
+  sbom:
+    runs-on: ubuntu-latest
+    needs: release-notes
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install cyclonedx-py
+        run: pip install --upgrade pip cyclonedx-bom
+      - name: Generate SBOM
+        run: |
+          pip install -e .
+          cyclonedx-py environment \
+            --output-format json \
+            --output-file exec-rest-api-sbom.cdx.json
+      - name: Attach SBOM to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: exec-rest-api-sbom.cdx.json
+          tag_name: ${{ github.ref_name }}
+
+  publish-release:
+    runs-on: ubuntu-latest
+    needs: [pypi, pyz, oci, sbom]
+    steps:
+      - name: Promote draft release to published
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: false
+          tag_name: ${{ github.ref_name }}
