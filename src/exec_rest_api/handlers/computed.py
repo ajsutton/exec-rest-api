@@ -229,6 +229,16 @@ async def gas_estimate(request: web.Request) -> web.Response:
         if is_revert(e) or is_out_of_gas(e):
             return web.json_response(revert_body(e))
         raise
+    if not isinstance(result, str):
+        return problem_response(
+            Problem(
+                status=502,
+                type_slug="upstream-error",
+                title="Upstream error",
+                detail="eth_estimateGas returned non-string result",
+                instance=request.path,
+            )
+        )
     return web.json_response({"gas": hex_to_int(result)})
 
 
@@ -250,7 +260,7 @@ async def access_list(request: web.Request) -> web.Response:
                 "address": map_address_lowercase(entry["address"]),
                 "storageKeys": [k.lower() for k in entry.get("storageKeys", [])],
             }
-            for entry in result.get("accessList", [])
+            for entry in result.get("accessList") or []
         ],
         "gasUsed": hex_to_int(result["gasUsed"]),
     }

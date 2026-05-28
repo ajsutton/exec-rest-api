@@ -1,8 +1,13 @@
 """Tests for computed-read handlers + shared CallRequest conversion."""
 
+from unittest.mock import AsyncMock
+
 import pytest
 
-from exec_rest_api.handlers.computed import call_request_to_rpc
+from exec_rest_api.config import Config
+from exec_rest_api.handlers.computed import call_request_to_rpc, register_routes
+from exec_rest_api.server import create_app
+from exec_rest_api.upstream import UpstreamClient, UpstreamJsonRpcError
 
 
 def test_minimal_call_request():
@@ -160,14 +165,6 @@ def test_data_field_accepts_empty_hex():
 
 
 # ── handler tests ──────────────────────────────────────────────────────────
-
-
-from unittest.mock import AsyncMock
-
-from exec_rest_api.config import Config
-from exec_rest_api.handlers.computed import register_routes
-from exec_rest_api.server import create_app
-from exec_rest_api.upstream import UpstreamClient, UpstreamJsonRpcError
 
 
 def _config() -> Config:
@@ -343,3 +340,30 @@ async def test_access_list_error_field_preserved(aiohttp_client):
     resp = await client.post("/access-list", json={"to": "0x" + "ab" * 20})
     body = await resp.json()
     assert body["error"] == "execution reverted"
+
+
+async def test_gas_estimate_non_revert_error_passes_to_middleware(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    mock.call.side_effect = UpstreamJsonRpcError(code=-32603, message="internal error")
+    client = await _build_client(aiohttp_client, mock)
+    resp = await client.post("/gas-estimate", json={"to": "0x" + "ab" * 20})
+    assert resp.status == 502
+    assert resp.headers["Content-Type"].startswith("application/problem+json")
+
+
+async def test_gas_estimate_non_string_result_is_502(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    mock.call.return_value = None
+    client = await _build_client(aiohttp_client, mock)
+    resp = await client.post("/gas-estimate", json={"to": "0x" + "ab" * 20})
+    assert resp.status == 502
+
+
+async def test_access_list_null_access_list_field(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    mock.call.return_value = {"accessList": None, "gasUsed": "0x5208"}
+    client = await _build_client(aiohttp_client, mock)
+    resp = await client.post("/access-list", json={"to": "0x" + "ab" * 20})
+    assert resp.status == 200
+    body = await resp.json()
+    assert body == {"accessList": [], "gasUsed": 21000}
