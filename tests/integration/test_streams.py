@@ -30,13 +30,13 @@ async def test_streams_blocks_emits_against_anvil(proxy_client):
 async def test_streams_sync_status_emits_initial_state(proxy_client):
     """The sync-status endpoint responds correctly.
 
-    Anvil does not support eth_subscribe("syncing"), so a 503 is acceptable.
+    Anvil does not support eth_subscribe("syncing"), so a 502 is acceptable.
     If the upstream does support it (status 200), the retry directive must appear.
     """
     resp = await proxy_client.get("/streams/sync-status")
-    # Anvil returns JSON-RPC -32603 for syncing subscriptions; the handler maps
-    # that to 503. Real nodes that support eth_subscribe("syncing") return 200.
-    assert resp.status in (200, 503)
+    # Anvil returns JSON-RPC -32603 for syncing subscriptions; map_jsonrpc_error
+    # maps that to 502. Real nodes that support eth_subscribe("syncing") return 200.
+    assert resp.status in (200, 502)
 
     if resp.status == 200:
         deadline = asyncio.get_event_loop().time() + 3.0

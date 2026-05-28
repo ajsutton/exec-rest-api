@@ -20,7 +20,7 @@ from typing import Any, cast
 from aiohttp import web
 
 from exec_rest_api.encoding import EncodingError, hex_to_int, map_address_lowercase
-from exec_rest_api.errors import Problem, problem_response
+from exec_rest_api.errors import Problem, map_jsonrpc_error, problem_response
 from exec_rest_api.handlers.blocks import block_header_from_rpc
 from exec_rest_api.handlers.transactions import log_from_rpc, transaction_from_rpc
 from exec_rest_api.server import add_get
@@ -79,7 +79,7 @@ async def _run_stream(
             AsyncGenerator[StreamEvent, None],
             await subscriptions.subscribe(kind=kind, params=params),
         )
-    except (SubscriptionUnavailable, UpstreamWsJsonRpcError) as exc:
+    except SubscriptionUnavailable as exc:
         return problem_response(
             Problem(
                 status=503,
@@ -87,6 +87,19 @@ async def _run_stream(
                 title="Upstream unavailable",
                 detail=str(exc),
                 instance=request.path,
+            )
+        )
+    except UpstreamWsJsonRpcError as exc:
+        mapped = map_jsonrpc_error(code=exc.code, message=exc.message, data=exc.data)
+        return problem_response(
+            Problem(
+                status=mapped.status,
+                type_slug=mapped.type_slug,
+                title=mapped.title,
+                detail=mapped.detail,
+                instance=request.path,
+                code=mapped.code,
+                data=mapped.data,
             )
         )
 
