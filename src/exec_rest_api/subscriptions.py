@@ -15,6 +15,7 @@ from collections.abc import AsyncIterator, Callable, Coroutine
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
+from exec_rest_api.metrics import Metrics
 from exec_rest_api.upstream_ws import UpstreamWsClosed
 
 logger = logging.getLogger("exec_rest_api.subscriptions")
@@ -102,13 +103,20 @@ class _ConsumerStream:
 class SubscriptionManager:
     """Multiplex upstream eth_subscribe calls across N client SSE streams."""
 
-    def __init__(self, *, ws: _WebSocketLike) -> None:
+    def __init__(self, *, ws: _WebSocketLike, metrics: Metrics | None = None) -> None:
         self._ws = ws
+        self._metrics = metrics
         self._slots: dict[tuple[StreamKind, str], _Slot] = {}
         self._slot_by_subscription_id: dict[str, _Slot] = {}
         self._lock = asyncio.Lock()
 
     # ── internal helpers ──────────────────────────────────────────────────
+
+    def _publish_gauge(self, kind: StreamKind) -> None:
+        if self._metrics is None:
+            return
+        count = sum(1 for slot in self._slots.values() if slot.kind == kind)
+        self._metrics.set_upstream_subscriptions(stream=kind, value=count)
 
     def _enqueue(self, q: asyncio.Queue[StreamEvent], event: StreamEvent, kind: StreamKind) -> None:
         try:
@@ -177,6 +185,7 @@ class SubscriptionManager:
                 )
                 self._slots[key] = slot
                 self._slot_by_subscription_id[sub_id] = slot
+                self._publish_gauge(kind)
             else:
                 slot.consumers.append(queue)
 
@@ -202,6 +211,7 @@ class SubscriptionManager:
             self._slots.pop(key, None)
             if sub_id is not None:
                 self._slot_by_subscription_id.pop(sub_id, None)
+            self._publish_gauge(slot.kind)
         if sub_id is not None and self._ws.connected:
             try:
                 await self._ws.request("eth_unsubscribe", [sub_id])

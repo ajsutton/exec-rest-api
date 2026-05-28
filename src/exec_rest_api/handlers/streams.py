@@ -23,6 +23,7 @@ from exec_rest_api.encoding import EncodingError, hex_to_int, map_address_lowerc
 from exec_rest_api.errors import Problem, map_jsonrpc_error, problem_response
 from exec_rest_api.handlers.blocks import block_header_from_rpc
 from exec_rest_api.handlers.transactions import log_from_rpc, transaction_from_rpc
+from exec_rest_api.metrics import Metrics
 from exec_rest_api.server import add_get
 from exec_rest_api.sse import format_event, format_retry, stream_with_heartbeat
 from exec_rest_api.subscriptions import GAP, StreamEvent, SubscriptionUnavailable
@@ -43,6 +44,15 @@ ReplayFn = Callable[[web.Request, web.StreamResponse, str], Awaitable[None]]
 def _block_event(payload: Any) -> tuple[str, str | None, Any]:
     header = block_header_from_rpc(payload)
     return "block", str(header["number"]), header
+
+
+def _publish_sse_gauge(app: web.Application, stream: str, delta: int) -> None:
+    metrics: Metrics | None = app.get("metrics")
+    if metrics is None:
+        return
+    counts: dict[str, int] = app.setdefault("__sse_counts__", {})
+    counts[stream] = counts.get(stream, 0) + delta
+    metrics.set_sse_connections(stream=stream, value=counts[stream])
 
 
 # ── shared driver ─────────────────────────────────────────────────────────
@@ -69,6 +79,7 @@ async def _run_stream(
     kind: str,
     params: Any,
     formatter: EventFormatter,
+    stream_label: str,
     gap_event_name: str = "gap",
     replay: ReplayFn | None = None,
 ) -> web.StreamResponse:
@@ -103,52 +114,56 @@ async def _run_stream(
             )
         )
 
-    resp = await _open_sse(request)
-
-    last_event_id = request.headers.get("Last-Event-ID")
-    if replay is not None and last_event_id is not None:
-        try:
-            await replay(request, resp, last_event_id)
-        except Exception:
-            logger.exception("replay failed on %s", kind)
-    elif last_event_id is not None:
-        # Spec §7.3: pending-transactions and sync-status have no replay,
-        # but emit a one-time `event: resumed` so the client sees the stream resumed.
-        await resp.write(format_event(event=gap_event_name, id_=None, data={}))
-
-    async def to_bytes() -> AsyncIterator[bytes]:
-        async for event in events:
-            if event is GAP or event.kind == "gap":
-                yield format_event(event=gap_event_name, id_=None, data={})
-                continue
-            try:
-                name, ev_id, payload = formatter(event.payload)
-            except Exception:
-                logger.exception("event formatter raised on %s", kind)
-                yield format_event(
-                    event="error",
-                    id_=None,
-                    data={
-                        "type": "https://errors.ethereum-rest/internal-error",
-                        "title": "Internal error",
-                    },
-                )
-                return
-            yield format_event(event=name, id_=ev_id, data=payload)
-
+    _publish_sse_gauge(request.app, stream=stream_label, delta=1)
     try:
-        async for chunk in stream_with_heartbeat(
-            to_bytes(), interval_seconds=config.sse_heartbeat_seconds
-        ):
-            if _over_backpressure_threshold(request, config.sse_buffer_bytes):
-                logger.info("dropping SSE client over backpressure threshold")
-                return resp
-            await resp.write(chunk)
-    except ConnectionResetError:
-        pass
+        resp = await _open_sse(request)
+
+        last_event_id = request.headers.get("Last-Event-ID")
+        if replay is not None and last_event_id is not None:
+            try:
+                await replay(request, resp, last_event_id)
+            except Exception:
+                logger.exception("replay failed on %s", kind)
+        elif last_event_id is not None:
+            # Spec §7.3: pending-transactions and sync-status have no replay,
+            # but emit a one-time `event: resumed` so the client sees the stream resumed.
+            await resp.write(format_event(event=gap_event_name, id_=None, data={}))
+
+        async def to_bytes() -> AsyncIterator[bytes]:
+            async for event in events:
+                if event is GAP or event.kind == "gap":
+                    yield format_event(event=gap_event_name, id_=None, data={})
+                    continue
+                try:
+                    name, ev_id, payload = formatter(event.payload)
+                except Exception:
+                    logger.exception("event formatter raised on %s", kind)
+                    yield format_event(
+                        event="error",
+                        id_=None,
+                        data={
+                            "type": "https://errors.ethereum-rest/internal-error",
+                            "title": "Internal error",
+                        },
+                    )
+                    return
+                yield format_event(event=name, id_=ev_id, data=payload)
+
+        try:
+            async for chunk in stream_with_heartbeat(
+                to_bytes(), interval_seconds=config.sse_heartbeat_seconds
+            ):
+                if _over_backpressure_threshold(request, config.sse_buffer_bytes):
+                    logger.info("dropping SSE client over backpressure threshold")
+                    return resp
+                await resp.write(chunk)
+        except ConnectionResetError:
+            pass
+        finally:
+            await events.aclose()
+        return resp
     finally:
-        await events.aclose()
-    return resp
+        _publish_sse_gauge(request.app, stream=stream_label, delta=-1)
 
 
 def _over_backpressure_threshold(request: web.Request, threshold_bytes: int) -> bool:
@@ -242,6 +257,7 @@ async def get_streams_blocks(request: web.Request) -> web.StreamResponse:
         kind="newHeads",
         params=None,
         formatter=_block_event,
+        stream_label="blocks",
         replay=_replay_blocks,
     )
 
@@ -309,6 +325,7 @@ async def get_streams_logs(request: web.Request) -> web.StreamResponse:
         kind="logs",
         params=filter_or_err,
         formatter=_log_event,
+        stream_label="logs",
         replay=replay,
     )
 
@@ -334,6 +351,7 @@ async def get_streams_pending(request: web.Request) -> web.StreamResponse:
         kind="newPendingTransactions",
         params=params,
         formatter=formatter,
+        stream_label="pending-transactions",
         gap_event_name="resumed",
     )
 
@@ -355,6 +373,7 @@ async def get_streams_sync_status(request: web.Request) -> web.StreamResponse:
         kind="syncing",
         params=None,
         formatter=_sync_status_event,
+        stream_label="sync-status",
         gap_event_name="resumed",
     )
 

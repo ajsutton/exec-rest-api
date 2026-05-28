@@ -147,3 +147,59 @@ async def test_subscribe_translates_ws_closed_to_unavailable():
     mgr = SubscriptionManager(ws=FlakyWs())
     with pytest.raises(SubscriptionUnavailable):
         await mgr.subscribe(kind="newHeads", params=None)
+
+
+# ── Plan 5: metrics integration ────────────────────────────────────────────
+
+
+async def test_subscriptions_gauge_updated_on_subscribe_and_unsubscribe():
+    """The upstream_subscriptions gauge tracks live slot count per kind."""
+    from unittest.mock import AsyncMock
+
+    from exec_rest_api.metrics import Metrics
+
+    metrics = Metrics()
+    ws = AsyncMock()
+    ws.connected = True
+    ws.request = AsyncMock(side_effect=["sub-1", "sub-2", None, None])
+    mgr = SubscriptionManager(ws=ws, metrics=metrics)
+
+    stream_a = await mgr.subscribe(kind="newHeads", params=None)
+    out = metrics.render()
+    assert 'exec_rest_api_upstream_subscriptions{stream="newHeads"} 1' in out
+
+    stream_b = await mgr.subscribe(kind="logs", params={"address": []})
+    out = metrics.render()
+    assert 'exec_rest_api_upstream_subscriptions{stream="newHeads"} 1' in out
+    assert 'exec_rest_api_upstream_subscriptions{stream="logs"} 1' in out
+
+    await stream_a.aclose()
+    out = metrics.render()
+    assert 'exec_rest_api_upstream_subscriptions{stream="newHeads"} 0' in out
+    assert 'exec_rest_api_upstream_subscriptions{stream="logs"} 1' in out
+
+    await stream_b.aclose()
+
+
+async def test_subscriptions_gauge_dedupes_per_unique_filter():
+    """Multiple consumers sharing one slot still count as one upstream subscription."""
+    from unittest.mock import AsyncMock
+
+    from exec_rest_api.metrics import Metrics
+
+    metrics = Metrics()
+    ws = AsyncMock()
+    ws.connected = True
+    ws.request = AsyncMock(side_effect=["sub-1", None])
+    mgr = SubscriptionManager(ws=ws, metrics=metrics)
+
+    a = await mgr.subscribe(kind="newHeads", params=None)
+    b = await mgr.subscribe(kind="newHeads", params=None)
+    out = metrics.render()
+    assert 'exec_rest_api_upstream_subscriptions{stream="newHeads"} 1' in out
+    await a.aclose()
+    out = metrics.render()
+    assert 'exec_rest_api_upstream_subscriptions{stream="newHeads"} 1' in out
+    await b.aclose()
+    out = metrics.render()
+    assert 'exec_rest_api_upstream_subscriptions{stream="newHeads"} 0' in out

@@ -6,6 +6,7 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -13,6 +14,7 @@ from exec_rest_api.config import Config
 from exec_rest_api.handlers.streams import register_routes
 from exec_rest_api.server import create_app
 from exec_rest_api.subscriptions import GAP, StreamEvent, SubscriptionUnavailable
+from exec_rest_api.upstream import UpstreamClient
 
 
 def _config() -> Config:
@@ -406,3 +408,53 @@ async def test_streams_sync_status_resumed_on_last_event_id(aiohttp_client):
         text += await resp.content.read(256)
     mgr.close()
     await resp.release()
+
+
+# ── Plan 5: sse_connections gauge ──────────────────────────────────────────
+
+
+async def test_sse_connections_gauge_increments_and_decrements(aiohttp_client):
+    """Connecting to /streams/blocks bumps the gauge; disconnect returns it to 0."""
+    import asyncio
+
+    from exec_rest_api.metrics import Metrics
+
+    metrics = Metrics()
+
+    class _Stream:
+        def __init__(self) -> None:
+            self._q: asyncio.Queue[StreamEvent] = asyncio.Queue()
+
+        def __aiter__(self) -> _Stream:
+            return self
+
+        async def __anext__(self) -> StreamEvent:
+            return await self._q.get()
+
+        async def aclose(self) -> None:
+            return
+
+    class _FakeManager:
+        def __init__(self) -> None:
+            self.stream = _Stream()
+
+        async def subscribe(self, *, kind: str, params: Any) -> Any:
+            return self.stream
+
+    mock_upstream = AsyncMock(spec=UpstreamClient)
+    app = create_app(config=_config(), upstream=mock_upstream)
+    app["metrics"] = metrics
+    app["subscriptions"] = _FakeManager()
+    register_routes(app)
+    client = await aiohttp_client(app)
+
+    async with client.get("/streams/blocks") as resp:
+        assert resp.status == 200
+        await asyncio.sleep(0.05)
+        assert 'exec_rest_api_sse_connections{stream="blocks"} 1' in metrics.render()
+
+    for _ in range(50):
+        if 'exec_rest_api_sse_connections{stream="blocks"} 0' in metrics.render():
+            break
+        await asyncio.sleep(0.02)
+    assert 'exec_rest_api_sse_connections{stream="blocks"} 0' in metrics.render()
