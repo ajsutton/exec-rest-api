@@ -33,6 +33,30 @@ def hex_to_int(s: str) -> int:
     return int(s, 16)
 
 
+def coerce_rpc_int(value: object) -> int:
+    """Decode an upstream-supplied integer that might be hex, decimal, or a number.
+
+    The JSON-RPC spec says quantities are hex strings, but real upstreams differ —
+    notably anvil's ``trace_filter`` returns ``blockNumber`` as a JSON number, and
+    some Erigon trace endpoints use decimal strings. Accept any of:
+    - bare int (e.g. ``2``)
+    - 0x-prefixed hex string (e.g. ``"0x10"``)
+    - decimal digit string (e.g. ``"16"``)
+    """
+    if isinstance(value, bool):
+        raise EncodingError(f"bool is not an int: {value!r}")
+    if isinstance(value, int):
+        if value < 0:
+            raise EncodingError(f"expected non-negative int, got {value}")
+        return value
+    if isinstance(value, str):
+        if _HEX_RE.fullmatch(value):
+            return int(value, 16)
+        if _DECIMAL_RE.fullmatch(value):
+            return int(value)
+    raise EncodingError(f"expected int or hex/decimal string, got {value!r}")
+
+
 def decimal_to_hex(n: int) -> str:
     """Render an int as a 0x-prefixed hex quantity (minimal form, no leading zeros)."""
     if not isinstance(n, int) or isinstance(n, bool) or n < 0:

@@ -19,6 +19,7 @@ from exec_rest_api.content_neg import (
     select_representation,
 )
 from exec_rest_api.encoding import (
+    coerce_rpc_int,
     hex_to_int,
     map_address_lowercase,
     rest_status_from_rpc,
@@ -153,7 +154,8 @@ def trace_from_rpc(rpc: dict[str, Any]) -> dict[str, Any]:
         "traceAddress": list(rpc.get("traceAddress", [])),
         "transactionHash": rpc["transactionHash"].lower(),
         "blockHash": rpc["blockHash"].lower(),
-        "blockNumber": hex_to_int(rpc["blockNumber"]),
+        # blockNumber may arrive as 0x-hex, decimal string, or bare int across upstreams.
+        "blockNumber": coerce_rpc_int(rpc["blockNumber"]),
     }
     if "result" in rpc and rpc["result"] is not None:
         out["result"] = rpc["result"]

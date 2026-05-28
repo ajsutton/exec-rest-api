@@ -7,6 +7,7 @@ from exec_rest_api.handlers.transactions import (
     log_from_rpc,
     receipt_from_rpc,
     register_routes,
+    trace_from_rpc,
     transaction_from_rpc,
 )
 from exec_rest_api.server import create_app
@@ -219,6 +220,38 @@ def test_log_from_rpc():
         "logIndex": 7,
         "removed": False,
     }
+
+
+# ─── trace converter ──────────────────────────────────────────────────────
+
+
+def _trace_rpc(block_number: object) -> dict[str, object]:
+    """Build a parity-style trace RPC dict with the given blockNumber form."""
+    return {
+        "action": {"from": "0x" + "11" * 20, "to": "0x" + "22" * 20, "value": "0x0"},
+        "type": "call",
+        "subtraces": 0,
+        "traceAddress": [],
+        "transactionHash": "0x" + "AA" * 32,
+        "blockHash": "0x" + "BB" * 32,
+        "blockNumber": block_number,
+    }
+
+
+def test_trace_from_rpc_blocknumber_as_hex_string():
+    out = trace_from_rpc(_trace_rpc("0x10"))
+    assert out["blockNumber"] == 16
+
+
+def test_trace_from_rpc_blocknumber_as_bare_int():
+    """Newer anvil builds emit blockNumber as a JSON number for trace_filter."""
+    out = trace_from_rpc(_trace_rpc(2))
+    assert out["blockNumber"] == 2
+
+
+def test_trace_from_rpc_blocknumber_as_decimal_string():
+    out = trace_from_rpc(_trace_rpc("123"))
+    assert out["blockNumber"] == 123
 
 
 # ─── endpoints ────────────────────────────────────────────────────────────

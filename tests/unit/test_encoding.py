@@ -6,6 +6,7 @@ from hypothesis import strategies as st
 
 from exec_rest_api.encoding import (
     EncodingError,
+    coerce_rpc_int,
     decimal_to_hex,
     hex_to_int,
     map_address_lowercase,
@@ -212,3 +213,42 @@ def test_hex_int_round_trip(n: int):
 @given(st.integers(min_value=0, max_value=2**256 - 1))
 def test_wei_round_trip(n: int):
     assert wei_from_rpc(wei_to_rpc(str(n))) == str(n)
+
+
+# ── coerce_rpc_int (upstream lenience) ────────────────────────────────────
+
+
+def test_coerce_rpc_int_accepts_bare_int():
+    assert coerce_rpc_int(0) == 0
+    assert coerce_rpc_int(42) == 42
+
+
+def test_coerce_rpc_int_accepts_hex_string():
+    assert coerce_rpc_int("0x0") == 0
+    assert coerce_rpc_int("0xff") == 255
+    assert coerce_rpc_int("0xABCDef") == 0xABCDEF
+
+
+def test_coerce_rpc_int_accepts_decimal_string():
+    assert coerce_rpc_int("0") == 0
+    assert coerce_rpc_int("16") == 16
+    assert coerce_rpc_int("18234567") == 18234567
+
+
+def test_coerce_rpc_int_rejects_negative_int():
+    with pytest.raises(EncodingError):
+        coerce_rpc_int(-1)
+
+
+def test_coerce_rpc_int_rejects_bool():
+    with pytest.raises(EncodingError):
+        coerce_rpc_int(True)
+
+
+def test_coerce_rpc_int_rejects_garbage():
+    with pytest.raises(EncodingError):
+        coerce_rpc_int("not-a-number")
+    with pytest.raises(EncodingError):
+        coerce_rpc_int(None)
+    with pytest.raises(EncodingError):
+        coerce_rpc_int(1.5)

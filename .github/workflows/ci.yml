@@ -61,6 +61,12 @@ jobs:
         uses: foundry-rs/foundry-toolchain@v1
         with:
           version: stable
+        env:
+          # foundryup hits api.github.com to resolve the "stable" tag; the
+          # macOS-arm64 runner pool's shared IPs blow through the anonymous
+          # 60/hr rate limit and get a 403. Passing the workflow token bumps
+          # us to the authenticated 5000/hr ceiling.
+          GH_TOKEN: ${{ github.token }}
       - name: Verify anvil
         if: runner.os != 'Windows'
         run: anvil --version
