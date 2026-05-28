@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -267,5 +268,96 @@ async def test_streams_sync_status_active(aiohttp_client):
     assert b'"syncing":true' in text
     assert b'"currentBlock":16' in text
     assert b'"highestBlock":256' in text
+    mgr.close()
+    await resp.release()
+
+
+class FakeUpstream:
+    """Minimal stand-in for UpstreamClient. Tests inject scripted replies."""
+
+    def __init__(self) -> None:
+        self.replies: dict[tuple[str, str], Any] = {}
+        self.calls: list[tuple[str, list[Any]]] = []
+
+    async def call(self, method: str, params: list[Any] | None = None) -> Any:
+        self.calls.append((method, list(params or [])))
+        key = (method, json.dumps(params or [], sort_keys=True))
+        return self.replies.get(key)
+
+
+async def _build_client_with_upstream(aiohttp_client, manager, upstream):
+    app = create_app(config=_config(), upstream=upstream)
+    app["subscriptions"] = manager
+    register_routes(app)
+    return await aiohttp_client(app)
+
+
+def _block_with_number(n: int) -> dict[str, Any]:
+    return {
+        "number": hex(n),
+        "hash": "0x" + f"{n:064x}",
+        "parentHash": "0x" + "00" * 32,
+        "stateRoot": "0x" + "00" * 32,
+        "transactionsRoot": "0x" + "00" * 32,
+        "receiptsRoot": "0x" + "00" * 32,
+        "logsBloom": "0x" + "00" * 256,
+        "gasUsed": "0x0",
+        "gasLimit": "0x0",
+        "timestamp": "0x0",
+        "miner": "0x" + "00" * 20,
+        "difficulty": "0x0",
+        "totalDifficulty": "0x0",
+        "extraData": "0x",
+        "mixHash": "0x" + "00" * 32,
+        "nonce": "0x0000000000000000",
+        "size": "0x0",
+    }
+
+
+async def test_streams_blocks_replay_via_last_event_id(aiohttp_client):
+    import json as _json
+    mgr = FakeManager()
+    upstream = FakeUpstream()
+    upstream.replies[("eth_blockNumber", "[]")] = "0x12"  # head = 18
+    for n in (16, 17, 18):
+        upstream.replies[
+            ("eth_getBlockByNumber", _json.dumps([hex(n), True], sort_keys=True))
+        ] = _block_with_number(n)
+
+    client = await _build_client_with_upstream(aiohttp_client, mgr, upstream)
+    resp = await client.get(
+        "/streams/blocks", headers={"Last-Event-ID": "15"}
+    )
+    assert resp.status == 200
+
+    # First three frames carry the replayed blocks (ids 16, 17, 18).
+    text = b""
+    deadline = asyncio.get_event_loop().time() + 2.0
+    while text.count(b"event: block") < 3:
+        if asyncio.get_event_loop().time() > deadline:
+            pytest.fail(f"only got {text.count(b'event: block')} block events; raw={text!r}")
+        text += await resp.content.read(512)
+    assert b"id: 16" in text
+    assert b"id: 17" in text
+    assert b"id: 18" in text
+    mgr.close()
+    await resp.release()
+
+
+async def test_streams_blocks_replay_beyond_window_emits_gap(aiohttp_client):
+    mgr = FakeManager()
+    upstream = FakeUpstream()
+    # Pretend the chain is way ahead — more than sse_replay_window (1024) blocks.
+    upstream.replies[("eth_blockNumber", "[]")] = hex(5000)
+
+    client = await _build_client_with_upstream(aiohttp_client, mgr, upstream)
+    resp = await client.get("/streams/blocks", headers={"Last-Event-ID": "100"})
+    assert resp.status == 200
+    text = b""
+    deadline = asyncio.get_event_loop().time() + 1.0
+    while b"event: gap" not in text:
+        if asyncio.get_event_loop().time() > deadline:
+            pytest.fail(f"never saw gap; got {text!r}")
+        text += await resp.content.read(256)
     mgr.close()
     await resp.release()

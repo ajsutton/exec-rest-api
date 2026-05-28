@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from typing import Any, cast
 
 from aiohttp import web
@@ -34,6 +34,9 @@ _TOPIC_RE = re.compile(r"^0x[0-9a-fA-F]{64}$")
 
 EventFormatter = Callable[[Any], tuple[str, str | None, Any]]
 """Converts one payload from the SubscriptionManager into (event-name, id, data)."""
+
+ReplayFn = Callable[[web.Request, web.StreamResponse, str], Awaitable[None]]
+"""Async callable (request, resp, last_event_id) that writes replay frames."""
 
 
 def _block_event(payload: Any) -> tuple[str, str | None, Any]:
@@ -66,6 +69,7 @@ async def _run_stream(
     params: Any,
     formatter: EventFormatter,
     gap_event_name: str = "gap",
+    replay: ReplayFn | None = None,
 ) -> web.StreamResponse:
     subscriptions = request.app["subscriptions"]
     config = request.app["config"]
@@ -86,6 +90,13 @@ async def _run_stream(
         )
 
     resp = await _open_sse(request)
+
+    last_event_id = request.headers.get("Last-Event-ID")
+    if replay is not None and last_event_id is not None:
+        try:
+            await replay(request, resp, last_event_id)
+        except Exception:
+            logger.exception("replay failed on %s", kind)
 
     async def to_bytes() -> AsyncIterator[bytes]:
         async for event in events:
@@ -132,12 +143,88 @@ def _over_backpressure_threshold(request: web.Request, threshold_bytes: int) -> 
         return False
 
 
+# ── replay helpers ────────────────────────────────────────────────────────
+
+
+async def _replay_blocks(
+    request: web.Request,
+    resp: web.StreamResponse,
+    last_event_id: str,
+) -> None:
+    """Backfill blocks between (lastId+1) and current head, bounded by config.sse_replay_window."""
+    config = request.app["config"]
+    upstream = request.app["upstream"]
+    try:
+        last_block = int(last_event_id)
+    except ValueError:
+        return  # invalid id; skip replay
+    head_hex = await upstream.call("eth_blockNumber")
+    head = hex_to_int(head_hex)
+    if last_block >= head:
+        return
+    missed = head - last_block
+    if missed > config.sse_replay_window:
+        await resp.write(format_event(event="gap", id_=None, data={
+            "from": last_block + 1,
+            "to": head,
+        }))
+        return
+    for n in range(last_block + 1, head + 1):
+        rpc = await upstream.call("eth_getBlockByNumber", [hex(n), True])
+        if rpc is None:
+            continue
+        header = block_header_from_rpc(rpc)
+        await resp.write(format_event(event="block", id_=str(header["number"]), data=header))
+
+
+async def _replay_logs(
+    request: web.Request,
+    resp: web.StreamResponse,
+    *,
+    last_event_id: str,
+    filter_: dict[str, Any],
+) -> None:
+    """Backfill logs over the missed range using eth_getLogs with the SSE URL filter."""
+    config = request.app["config"]
+    upstream = request.app["upstream"]
+    try:
+        # Last-Event-ID format: "<blockNumber>-<logIndex>"
+        block_str, _ = last_event_id.split("-", 1)
+        last_block = int(block_str)
+    except ValueError:
+        return
+    head_hex = await upstream.call("eth_blockNumber")
+    head = hex_to_int(head_hex)
+    if last_block >= head:
+        return
+    if head - last_block > config.sse_replay_window:
+        await resp.write(format_event(event="gap", id_=None, data={
+            "from": last_block + 1,
+            "to": head,
+        }))
+        return
+    fetch_filter: dict[str, Any] = {
+        **filter_,
+        "fromBlock": hex(last_block + 1),
+        "toBlock": hex(head),
+    }
+    result = await upstream.call("eth_getLogs", [fetch_filter])
+    for log in result or []:
+        rest_log = log_from_rpc(log)
+        ev_id = f"{rest_log['blockNumber']}-{rest_log['logIndex']}"
+        await resp.write(format_event(event="log", id_=ev_id, data=rest_log))
+
+
 # ── handlers ──────────────────────────────────────────────────────────────
 
 
 async def get_streams_blocks(request: web.Request) -> web.StreamResponse:
     return await _run_stream(
-        request, kind="newHeads", params=None, formatter=_block_event
+        request,
+        kind="newHeads",
+        params=None,
+        formatter=_block_event,
+        replay=_replay_blocks,
     )
 
 
@@ -195,8 +282,16 @@ async def get_streams_logs(request: web.Request) -> web.StreamResponse:
     filter_or_err = _parse_log_filter(request)
     if isinstance(filter_or_err, web.Response):
         return filter_or_err
+
+    async def replay(req: web.Request, resp: web.StreamResponse, leid: str) -> None:
+        await _replay_logs(req, resp, last_event_id=leid, filter_=filter_or_err)
+
     return await _run_stream(
-        request, kind="logs", params=filter_or_err, formatter=_log_event
+        request,
+        kind="logs",
+        params=filter_or_err,
+        formatter=_log_event,
+        replay=replay,
     )
 
 
