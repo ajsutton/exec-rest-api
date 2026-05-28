@@ -19,7 +19,7 @@ from typing import Any, cast
 
 from aiohttp import web
 
-from exec_rest_api.encoding import EncodingError, map_address_lowercase
+from exec_rest_api.encoding import EncodingError, hex_to_int, map_address_lowercase
 from exec_rest_api.errors import Problem, problem_response
 from exec_rest_api.handlers.blocks import block_header_from_rpc
 from exec_rest_api.handlers.transactions import log_from_rpc, transaction_from_rpc
@@ -225,7 +225,29 @@ async def get_streams_pending(request: web.Request) -> web.StreamResponse:
     )
 
 
+def _sync_status_event(payload: Any) -> tuple[str, str | None, Any]:
+    if payload is False:
+        return "sync-status", None, {"syncing": False}
+    return "sync-status", None, {
+        "syncing": True,
+        "startingBlock": hex_to_int(payload["startingBlock"]),
+        "currentBlock": hex_to_int(payload["currentBlock"]),
+        "highestBlock": hex_to_int(payload["highestBlock"]),
+    }
+
+
+async def get_streams_sync_status(request: web.Request) -> web.StreamResponse:
+    return await _run_stream(
+        request,
+        kind="syncing",
+        params=None,
+        formatter=_sync_status_event,
+        gap_event_name="resumed",
+    )
+
+
 def register_routes(app: web.Application) -> None:
     add_get(app, "/streams/blocks", get_streams_blocks)
     add_get(app, "/streams/logs", get_streams_logs)
     add_get(app, "/streams/pending-transactions", get_streams_pending)
+    add_get(app, "/streams/sync-status", get_streams_sync_status)

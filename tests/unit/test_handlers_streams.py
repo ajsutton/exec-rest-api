@@ -227,3 +227,45 @@ async def test_streams_pending_full(aiohttp_client):
     assert mgr.subscribe_calls == [("newPendingTransactions", True)]
     mgr.close()
     await resp.release()
+
+
+async def test_streams_sync_status_synced(aiohttp_client):
+    mgr = FakeManager()
+    client = await _build_client(aiohttp_client, mgr)
+    resp = await client.get("/streams/sync-status")
+    assert resp.status == 200
+    assert mgr.subscribe_calls == [("syncing", None)]
+    mgr.emit(False)
+    text = b""
+    deadline = asyncio.get_event_loop().time() + 1.0
+    while b"event: sync-status" not in text:
+        if asyncio.get_event_loop().time() > deadline:
+            pytest.fail(f"never saw event: sync-status; got {text!r}")
+        text += await resp.content.read(256)
+    assert b'{"syncing":false}' in text
+    mgr.close()
+    await resp.release()
+
+
+async def test_streams_sync_status_active(aiohttp_client):
+    mgr = FakeManager()
+    client = await _build_client(aiohttp_client, mgr)
+    resp = await client.get("/streams/sync-status")
+    mgr.emit(
+        {
+            "startingBlock": "0x0",
+            "currentBlock": "0x10",
+            "highestBlock": "0x100",
+        }
+    )
+    text = b""
+    deadline = asyncio.get_event_loop().time() + 1.0
+    while b"event: sync-status" not in text:
+        if asyncio.get_event_loop().time() > deadline:
+            pytest.fail(f"never saw event: sync-status; got {text!r}")
+        text += await resp.content.read(256)
+    assert b'"syncing":true' in text
+    assert b'"currentBlock":16' in text
+    assert b'"highestBlock":256' in text
+    mgr.close()
+    await resp.release()
