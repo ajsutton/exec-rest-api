@@ -14,6 +14,7 @@ import aiohttp
 from aiohttp import web
 
 from exec_rest_api import __version__
+from exec_rest_api.chain_head import ChainHeadTracker
 from exec_rest_api.config import Config, ConfigError, parse_config
 from exec_rest_api.handlers import (
     accounts,
@@ -27,7 +28,9 @@ from exec_rest_api.handlers import (
     transactions,
     utils_keccak,
 )
+from exec_rest_api.handlers import metrics as metrics_handler
 from exec_rest_api.handlers import streams as streams_handler
+from exec_rest_api.metrics import Metrics, current_request_upstream_methods
 from exec_rest_api.server import create_app
 from exec_rest_api.subscriptions import SubscriptionManager
 from exec_rest_api.upstream import UpstreamClient
@@ -85,21 +88,29 @@ def _split_listen(listen: str) -> tuple[str, int]:
 async def _run(config: Config) -> None:
     connector = aiohttp.TCPConnector(limit=100)
     timeout = aiohttp.ClientTimeout(total=config.upstream_timeout_seconds)
+    metrics = Metrics()
+
     async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+        def observe_upstream(method: str, status: str, duration_seconds: float) -> None:
+            metrics.inc_upstream(method=method, status=status)
+            metrics.observe_upstream_duration(method=method, duration_seconds=duration_seconds)
+            current = current_request_upstream_methods.get()
+            if current is not None:
+                current.append(method)
+
         upstream = UpstreamClient(
             session=session,
             http_url=config.upstream_http,
             default_timeout_seconds=config.upstream_timeout_seconds,
+            on_call=observe_upstream,
         )
 
-        # WebSocket + subscription manager. If the WS endpoint can't be reached,
-        # we still serve the REST surface; /streams/* return 503 until WS recovers.
         ws_client = UpstreamWebSocket(
             session=session,
             url=config.upstream_ws,
-            on_notification=lambda _: None,  # rewired below once manager exists
+            on_notification=lambda _: None,
         )
-        subscriptions = SubscriptionManager(ws=ws_client)
+        subscriptions = SubscriptionManager(ws=ws_client, metrics=metrics)
         ws_client.on_notification = subscriptions.on_notification
         ws_client.on_reconnect = subscriptions.on_reconnect
 
@@ -111,8 +122,17 @@ async def _run(config: Config) -> None:
                 exc,
             )
 
+        chain_head = ChainHeadTracker(
+            upstream=upstream,
+            subscriptions=subscriptions,
+            metrics=metrics,
+        )
+        await chain_head.start()
+
         app = create_app(config=config, upstream=upstream)
         app["subscriptions"] = subscriptions
+        app["metrics"] = metrics
+        app["chain_head"] = chain_head
         health.register_routes(app)
         chain.register_routes(app)
         gas.register_routes(app)
@@ -124,9 +144,10 @@ async def _run(config: Config) -> None:
         computed.register_routes(app)
         utils_keccak.register_routes(app)
         streams_handler.register_routes(app)
+        metrics_handler.register_routes(app)
 
         host, port = _split_listen(config.listen)
-        runner = web.AppRunner(app, access_log=None)  # we have our own access-log middleware
+        runner = web.AppRunner(app, access_log=None)
         await runner.setup()
         site = web.TCPSite(runner, host=host, port=port)
         await site.start()
@@ -138,14 +159,14 @@ async def _run(config: Config) -> None:
             extra={"listen": config.listen, "upstream_http": config.upstream_http},
         )
 
-        # Run until SIGINT / SIGTERM
         stop_event = asyncio.Event()
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
-            with contextlib.suppress(NotImplementedError):  # Windows
+            with contextlib.suppress(NotImplementedError):
                 loop.add_signal_handler(sig, stop_event.set)
         await stop_event.wait()
         await runner.cleanup()
+        await chain_head.stop()
         await ws_client.stop()
 
 

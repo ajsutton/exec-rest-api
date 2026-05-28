@@ -104,27 +104,52 @@ def _build_config(upstream_http: str) -> Config:
 @pytest_asyncio.fixture
 async def proxy_client(anvil_url, aiohttp_client):
     """Build the proxy app talking to anvil and return an aiohttp test client."""
+    from exec_rest_api.chain_head import ChainHeadTracker
+    from exec_rest_api.handlers import metrics as metrics_handler
     from exec_rest_api.handlers import streams as streams_handler
+    from exec_rest_api.metrics import Metrics, current_request_upstream_methods
     from exec_rest_api.subscriptions import SubscriptionManager
     from exec_rest_api.upstream_ws import UpstreamWebSocket
 
     ws_url = anvil_url.replace("http://", "ws://")
+    metrics = Metrics()
     async with aiohttp.ClientSession() as session:
-        upstream = UpstreamClient(session=session, http_url=anvil_url)
+        def observe_upstream(method: str, status: str, duration_seconds: float) -> None:
+            metrics.inc_upstream(method=method, status=status)
+            metrics.observe_upstream_duration(method=method, duration_seconds=duration_seconds)
+            current = current_request_upstream_methods.get()
+            if current is not None:
+                current.append(method)
+
+        upstream = UpstreamClient(
+            session=session,
+            http_url=anvil_url,
+            on_call=observe_upstream,
+        )
         ws_client = UpstreamWebSocket(
             session=session,
             url=ws_url,
             on_notification=lambda _: None,
             backoff_schedule=(0.1,),
         )
-        manager = SubscriptionManager(ws=ws_client)
+        manager = SubscriptionManager(ws=ws_client, metrics=metrics)
         ws_client.on_notification = manager.on_notification
         ws_client.on_reconnect = manager.on_reconnect
         with contextlib.suppress(asyncio.TimeoutError, Exception):
             await asyncio.wait_for(ws_client.start(), timeout=5.0)
 
+        chain_head = ChainHeadTracker(
+            upstream=upstream,
+            subscriptions=manager,
+            metrics=metrics,
+            poll_interval_seconds=1.0,
+        )
+        await chain_head.start()
+
         app = create_app(config=_build_config(anvil_url), upstream=upstream)
         app["subscriptions"] = manager
+        app["metrics"] = metrics
+        app["chain_head"] = chain_head
         health.register_routes(app)
         chain.register_routes(app)
         gas.register_routes(app)
@@ -136,8 +161,10 @@ async def proxy_client(anvil_url, aiohttp_client):
         computed.register_routes(app)
         utils_keccak.register_routes(app)
         streams_handler.register_routes(app)
+        metrics_handler.register_routes(app)
         try:
             client = await aiohttp_client(app)
             yield client
         finally:
+            await chain_head.stop()
             await ws_client.stop()
