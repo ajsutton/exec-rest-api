@@ -51,9 +51,19 @@ async def test_chain_composite(proxy_client):
 
 
 async def test_unknown_path_404(proxy_client):
-    """A path with no registered handler returns aiohttp's default 404."""
+    """A path with no registered handler returns a Problem with the URL catalogue."""
     resp = await proxy_client.get("/no-such-resource")
     assert resp.status == 404
+    assert resp.content_type == "application/problem+json"
+    body = await resp.json()
+    assert body["type"].endswith("/path-not-supported")
+    available = body["data"]["availableUrls"]
+    # Spot-check a few well-known routes appear in the catalogue
+    assert "/chain" in available
+    assert "/chain/id" in available
+    assert "/health" in available
+    assert "/metrics" in available
+    assert "/blocks/{id}" in available
 
 
 async def test_request_id_round_trip(proxy_client):

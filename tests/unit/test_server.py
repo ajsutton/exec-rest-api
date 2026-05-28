@@ -288,3 +288,67 @@ async def test_metrics_middleware_records_500_status_on_exception(
     await client.get("/_test/unexpected")
     out = metrics.render()
     assert 'status="500"' in out
+
+
+# ── Path-not-supported (router 404) returns Problem+JSON with available URLs ─
+
+
+async def test_router_404_returns_problem_with_available_urls(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    app = create_app(config=_make_config(), upstream=mock)
+
+    async def ok(request: web.Request) -> web.Response:
+        return web.Response(text="ok")
+
+    add_get(app, "/chain", ok)
+    add_get(app, "/blocks/{id}", ok)
+
+    client = await aiohttp_client(app)
+    resp = await client.get("/no-such-path")
+    assert resp.status == 404
+    assert resp.content_type == "application/problem+json"
+    body = await resp.json()
+    assert body["type"].endswith("/path-not-supported")
+    assert body["title"] == "Path not supported"
+    assert body["status"] == 404
+    assert body["instance"] == "/no-such-path"
+    # Available URLs are listed, sorted, and deduped (no trailing-slash variants).
+    assert body["data"]["availableUrls"] == ["/blocks/{id}", "/chain"]
+
+
+async def test_router_404_detail_mentions_method_and_path(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    app = create_app(config=_make_config(), upstream=mock)
+    client = await aiohttp_client(app)
+    resp = await client.post("/no-such-path")
+    body = await resp.json()
+    assert "POST" in body["detail"]
+    assert "/no-such-path" in body["detail"]
+
+
+async def test_router_404_does_not_shadow_handler_initiated_not_found(aiohttp_client):
+    """Handler-returned 404 Problem (resource-not-found) is left alone."""
+    from exec_rest_api.errors import Problem, problem_response
+
+    mock = AsyncMock(spec=UpstreamClient)
+    app = create_app(config=_make_config(), upstream=mock)
+
+    async def missing(request: web.Request) -> web.Response:
+        return problem_response(
+            Problem(
+                status=404,
+                type_slug="not-found",
+                title="Not found",
+                detail="block 0xdead not found",
+                instance=request.path,
+            )
+        )
+
+    add_get(app, "/blocks/{id}", missing)
+    client = await aiohttp_client(app)
+    resp = await client.get("/blocks/0xdead")
+    assert resp.status == 404
+    body = await resp.json()
+    # Stays "not-found", does NOT switch to "path-not-supported"
+    assert body["type"].endswith("/not-found")
+    assert "availableUrls" not in body.get("data", {})

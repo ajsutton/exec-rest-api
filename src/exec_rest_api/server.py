@@ -72,6 +72,21 @@ def _path_template(request: web.Request) -> str:
     return resource.canonical
 
 
+def _available_url_templates(app: web.Application) -> list[str]:
+    """Sorted, deduped list of registered route templates.
+
+    `add_get` registers each path twice (with and without trailing slash) so the
+    proxy is tolerant of both forms; we collapse them to a single canonical entry
+    for the 404 payload.
+    """
+    seen: set[str] = set()
+    for resource in app.router.resources():
+        path = resource.canonical
+        normalized = path.rstrip("/") or "/"
+        seen.add(normalized)
+    return sorted(seen)
+
+
 @web.middleware
 async def metrics_middleware(request: web.Request, handler: Handler) -> web.StreamResponse:
     metrics: Metrics | None = request.app.get("metrics")
@@ -123,8 +138,21 @@ async def error_mapping_middleware(request: web.Request, handler: Handler) -> we
             instance=request.path,
         )
         return problem_response(problem)
+    except web.HTTPNotFound:
+        # Router didn't match a handler — return a Problem listing what IS available.
+        # Handler-initiated resource-not-found uses problem_response() directly and
+        # never raises, so it doesn't reach this branch.
+        problem = Problem(
+            status=404,
+            type_slug="path-not-supported",
+            title="Path not supported",
+            detail=f"No handler is registered for {request.method} {request.path}",
+            instance=request.path,
+            data={"availableUrls": _available_url_templates(request.app)},
+        )
+        return problem_response(problem)
     except web.HTTPException:
-        # aiohttp's own HTTP exceptions (e.g. 404 from router) pass through.
+        # Other aiohttp HTTP exceptions (e.g. 405) pass through.
         raise
     except Exception:
         logger.exception(
