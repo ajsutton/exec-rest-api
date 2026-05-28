@@ -367,3 +367,134 @@ async def test_access_list_null_access_list_field(aiohttp_client):
     assert resp.status == 200
     body = await resp.json()
     assert body == {"accessList": [], "gasUsed": 21000}
+
+
+# /simulate ────────────────────────────────────────────────────────────────
+
+
+async def test_simulate_pass_through_and_revert_per_call(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    # Upstream eth_simulateV1 returns an array of block-state results
+    mock.call.return_value = [
+        {
+            "number": "0x1",
+            "hash": "0x" + "aa" * 32,
+            "parentHash": "0x" + "bb" * 32,
+            "stateRoot": "0x" + "11" * 32,
+            "transactionsRoot": "0x" + "22" * 32,
+            "receiptsRoot": "0x" + "33" * 32,
+            "logsBloom": "0x" + "00" * 256,
+            "gasUsed": "0x1",
+            "gasLimit": "0x2",
+            "timestamp": "0x3",
+            "miner": "0x" + "44" * 20,
+            "difficulty": "0x0",
+            "totalDifficulty": "0x0",
+            "extraData": "0x",
+            "mixHash": "0x" + "55" * 32,
+            "nonce": "0x0000000000000000",
+            "size": "0x100",
+            "calls": [
+                {"returnData": "0xdead", "gasUsed": "0x5208", "logs": []},
+                {
+                    "returnData": "0x08c379a0" + "00" * 64,
+                    "gasUsed": "0x6000",
+                    "status": "0x0",
+                    "error": "execution reverted",
+                },
+            ],
+        }
+    ]
+    client = await _build_client(aiohttp_client, mock)
+    resp = await client.post(
+        "/simulate",
+        json={"blockStateCalls": [{"calls": [{"to": "0x" + "ab" * 20}]}]},
+    )
+    assert resp.status == 200
+    body = await resp.json()
+    assert isinstance(body, list) and len(body) == 1
+    block_result = body[0]
+    assert block_result["block"]["number"] == 1
+    assert len(block_result["calls"]) == 2
+    # First call succeeded
+    assert block_result["calls"][0]["returnData"] == "0xdead"
+    assert block_result["calls"][0]["gasUsed"] == 21000
+    # Second call reverted
+    assert block_result["calls"][1]["reverted"] is True
+
+
+async def test_simulate_top_level_revert(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    mock.call.side_effect = UpstreamJsonRpcError(
+        code=-32000, message="execution reverted", data="0x"
+    )
+    client = await _build_client(aiohttp_client, mock)
+    resp = await client.post(
+        "/simulate",
+        json={"blockStateCalls": [{"calls": []}]},
+    )
+    # Top-level revert returns 200 with reverted body
+    assert resp.status == 200
+    body = await resp.json()
+    assert body["reverted"] is True
+
+
+async def test_simulate_non_list_result_is_502(aiohttp_client):
+    """Upstream returning a non-list for eth_simulateV1 yields a 502 upstream-error."""
+    mock = AsyncMock(spec=UpstreamClient)
+    mock.call.return_value = {"unexpected": "object"}
+    client = await _build_client(aiohttp_client, mock)
+    resp = await client.post(
+        "/simulate",
+        json={"blockStateCalls": [{"calls": []}]},
+    )
+    assert resp.status == 502
+    body = await resp.json()
+    assert body["title"] == "Upstream error"
+    assert "eth_simulateV1" in body["detail"]
+
+
+# /debug-traces/call ───────────────────────────────────────────────────────
+
+
+async def test_debug_traces_call_forwards_payload(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    mock.call.return_value = {"gas": "0x5208", "returnValue": "0xdead", "structLogs": []}
+    client = await _build_client(aiohttp_client, mock)
+    resp = await client.post(
+        "/debug-traces/call",
+        json={
+            "call": {"to": "0x" + "ab" * 20, "data": "0x"},
+            "tracer": {"tracer": "callTracer"},
+        },
+    )
+    assert resp.status == 200
+    body = await resp.json()
+    assert body == {"gas": "0x5208", "returnValue": "0xdead", "structLogs": []}
+    # Upstream call args: (call_object, "latest", tracer_config)
+    args, _ = mock.call.call_args
+    method, params = args
+    assert method == "debug_traceCall"
+    assert params[0]["to"] == "0x" + "ab" * 20
+    assert params[1] == "latest"
+    assert params[2] == {"tracer": "callTracer"}
+
+
+async def test_debug_traces_call_with_at(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    mock.call.return_value = {}
+    client = await _build_client(aiohttp_client, mock)
+    await client.post(
+        "/debug-traces/call",
+        json={"call": {"to": "0x" + "ab" * 20}, "at": "100"},
+    )
+    args, _ = mock.call.call_args
+    _, params = args
+    assert params[1] == "0x64"
+
+
+async def test_debug_traces_call_missing_call_field_400(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    client = await _build_client(aiohttp_client, mock)
+    resp = await client.post("/debug-traces/call", json={"tracer": {}})
+    assert resp.status == 400

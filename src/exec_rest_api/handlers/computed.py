@@ -14,7 +14,9 @@ from typing import Any
 
 from aiohttp import web
 
-from exec_rest_api.abi_revert import is_out_of_gas, is_revert, revert_body
+from exec_rest_api.abi_revert import decode_revert_data, is_out_of_gas, is_revert, revert_body
+from exec_rest_api.handlers.blocks import block_header_from_rpc
+from exec_rest_api.handlers.transactions import log_from_rpc
 from exec_rest_api.block_id import parse_block_id
 from exec_rest_api.encoding import (
     decimal_to_hex,
@@ -269,6 +271,125 @@ async def access_list(request: web.Request) -> web.Response:
     return web.json_response(out)
 
 
+def _simulate_call_result(call_rpc: dict[str, Any]) -> dict[str, Any]:
+    """Shape one inner call result from eth_simulateV1.
+
+    If `status` indicates failure or `error` is present, emit the revert body.
+    Otherwise emit returnData / gasUsed / logs.
+    """
+    status = call_rpc.get("status")
+    if (status is not None and status == "0x0") or call_rpc.get("error"):
+        data = call_rpc.get("returnData", "0x")
+        if not isinstance(data, str):
+            data = "0x"
+        reason, panic = decode_revert_data(data)
+        return {
+            "reverted": True,
+            "data": data.lower(),
+            "reason": reason,
+            "panicCode": panic,
+        }
+    out: dict[str, Any] = {
+        "returnData": call_rpc.get("returnData", "0x").lower(),
+        "gasUsed": hex_to_int(call_rpc["gasUsed"]),
+    }
+    if "logs" in call_rpc and call_rpc["logs"] is not None:
+        out["logs"] = [log_from_rpc(log) for log in call_rpc["logs"]]
+    return out
+
+
+async def simulate(request: web.Request) -> web.Response:
+    try:
+        body = await request.json()
+    except (ValueError, TypeError):
+        return _bad_request(request.path, "request body must be valid JSON")
+    if not isinstance(body, dict) or "blockStateCalls" not in body:
+        return _bad_request(
+            request.path, "field `blockStateCalls` is required"
+        )
+    # Build the RPC payload: convert each call inside each block-state.
+    rpc_payload: dict[str, Any] = {}
+    try:
+        bsc_list: list[dict[str, Any]] = []
+        for bsc in body["blockStateCalls"]:
+            if not isinstance(bsc, dict):
+                raise ValueError("each blockStateCalls entry must be an object")
+            rpc_bsc: dict[str, Any] = {}
+            if "blockOverrides" in bsc:
+                tmp: dict[str, Any] = {}
+                _convert_block_overrides(tmp, {"blockOverrides": bsc["blockOverrides"]})
+                rpc_bsc["blockOverrides"] = tmp["blockOverrides"]
+            if "stateOverrides" in bsc:
+                tmp = {}
+                _convert_state_overrides(tmp, {"stateOverrides": bsc["stateOverrides"]})
+                rpc_bsc["stateOverrides"] = tmp["stateOverrides"]
+            calls = bsc.get("calls", [])
+            if not isinstance(calls, list):
+                raise ValueError("`calls` must be an array")
+            rpc_bsc["calls"] = [call_request_to_rpc(c)[0] for c in calls]
+            bsc_list.append(rpc_bsc)
+        rpc_payload["blockStateCalls"] = bsc_list
+        for flag in ("traceTransfers", "validation", "returnFullTransactions"):
+            if flag in body:
+                rpc_payload[flag] = bool(body[flag])
+        at_raw = body.get("at", "latest")
+        at = parse_block_id(at_raw).to_rpc_param()
+    except (ValueError, KeyError) as e:
+        return _bad_request(request.path, str(e))
+    upstream: UpstreamClient = request.app["upstream"]
+    try:
+        result = await upstream.call("eth_simulateV1", [rpc_payload, at])
+    except UpstreamJsonRpcError as e:
+        if is_revert(e) or is_out_of_gas(e):
+            return web.json_response(revert_body(e))
+        raise
+    if not isinstance(result, list):
+        return problem_response(
+            Problem(
+                status=502,
+                type_slug="upstream-error",
+                title="Upstream error",
+                detail="eth_simulateV1 returned non-list result",
+                instance=request.path,
+            )
+        )
+    out_blocks: list[dict[str, Any]] = []
+    for block_rpc in result:
+        out_blocks.append(
+            {
+                "block": block_header_from_rpc(block_rpc),
+                "calls": [_simulate_call_result(c) for c in block_rpc.get("calls", [])],
+            }
+        )
+    return web.json_response(out_blocks)
+
+
+async def debug_traces_call(request: web.Request) -> web.Response:
+    try:
+        body = await request.json()
+    except (ValueError, TypeError):
+        return _bad_request(request.path, "request body must be valid JSON")
+    if not isinstance(body, dict) or "call" not in body:
+        return _bad_request(request.path, "field `call` is required")
+    try:
+        rpc_call, _at_inside = call_request_to_rpc(body["call"])
+        at_raw = body.get("at", "latest")
+        at = parse_block_id(at_raw).to_rpc_param()
+    except (ValueError, KeyError) as e:
+        return _bad_request(request.path, str(e))
+    tracer = body.get("tracer") or {}
+    if not isinstance(tracer, dict):
+        return _bad_request(request.path, "`tracer` must be an object")
+    upstream: UpstreamClient = request.app["upstream"]
+    try:
+        result = await upstream.call("debug_traceCall", [rpc_call, at, tracer])
+    except UpstreamJsonRpcError as e:
+        if is_revert(e) or is_out_of_gas(e):
+            return web.json_response(revert_body(e))
+        raise
+    return web.json_response(result)
+
+
 def register_routes(app: web.Application) -> None:
     app.router.add_post("/call", call)
     app.router.add_post("/call/", call)
@@ -276,3 +397,7 @@ def register_routes(app: web.Application) -> None:
     app.router.add_post("/gas-estimate/", gas_estimate)
     app.router.add_post("/access-list", access_list)
     app.router.add_post("/access-list/", access_list)
+    app.router.add_post("/simulate", simulate)
+    app.router.add_post("/simulate/", simulate)
+    app.router.add_post("/debug-traces/call", debug_traces_call)
+    app.router.add_post("/debug-traces/call/", debug_traces_call)
