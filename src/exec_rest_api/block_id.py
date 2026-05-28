@@ -51,8 +51,9 @@ class BlockId:
             return self.tag
         if self.number is not None:
             return f"0x{self.number:x}"
-        assert self.hash is not None
-        return self.hash
+        if self.hash is not None:
+            return self.hash
+        raise RuntimeError("BlockId has no value set — should be unreachable")  # pragma: no cover
 
 
 def parse_block_id(raw: str) -> BlockId:
