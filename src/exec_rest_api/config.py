@@ -9,12 +9,10 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
-from typing import Final, TypeVar
+from typing import Final
 
 ENV_PREFIX: Final[str] = "EXEC_REST_API_"
 _LOG_LEVELS: Final[frozenset[str]] = frozenset({"debug", "info", "warn", "error"})
-
-_T = TypeVar("_T")
 
 
 class ConfigError(ValueError):
