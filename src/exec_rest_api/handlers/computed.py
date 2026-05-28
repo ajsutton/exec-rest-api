@@ -9,6 +9,7 @@ else re-raises and the server middleware turns it into a Problem.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from exec_rest_api.block_id import parse_block_id
@@ -18,6 +19,8 @@ from exec_rest_api.encoding import (
     parse_input_int,
     parse_input_wei,
 )
+
+_HEX_BYTES_RE: re.Pattern[str] = re.compile(r"^0x([0-9a-fA-F]{2})*$")
 
 # Fields on CallRequest that are quantities (decimal-string → 0x-hex).
 _INT_FIELDS = ("gas", "nonce", "chainId")
@@ -45,8 +48,8 @@ def _convert_bytes(out: dict[str, Any], body: dict[str, Any]) -> None:
     for f in _BYTES_FIELDS:
         if f in body and body[f] is not None:
             v = body[f]
-            if not isinstance(v, str) or not v.startswith("0x"):
-                raise ValueError(f"field {f!r} must be 0x-prefixed hex bytes")
+            if not isinstance(v, str) or not _HEX_BYTES_RE.fullmatch(v):
+                raise ValueError(f"field {f!r} must be 0x-prefixed hex bytes (even length)")
             out[f] = v.lower()
 
 
@@ -60,10 +63,20 @@ def _convert_access_list(out: dict[str, Any], body: dict[str, Any]) -> None:
     for entry in al:
         if not isinstance(entry, dict):
             raise ValueError("accessList entries must be objects")
+        if "address" not in entry:
+            raise ValueError("accessList entry missing `address`")
+        keys = entry.get("storageKeys", [])
+        if not isinstance(keys, list):
+            raise ValueError("accessList `storageKeys` must be an array")
+        converted_keys: list[str] = []
+        for k in keys:
+            if not isinstance(k, str):
+                raise ValueError("accessList storageKey entries must be strings")
+            converted_keys.append(k.lower())
         converted.append(
             {
                 "address": map_address_lowercase(entry["address"]),
-                "storageKeys": [k.lower() for k in entry.get("storageKeys", [])],
+                "storageKeys": converted_keys,
             }
         )
     out["accessList"] = converted

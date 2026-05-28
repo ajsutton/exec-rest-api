@@ -128,3 +128,32 @@ def test_invalid_numeric_raises():
 def test_invalid_at_raises():
     with pytest.raises(ValueError):
         call_request_to_rpc({"to": "0x" + "ab" * 20, "at": "garbage"})
+
+
+def test_access_list_entry_missing_address_raises():
+    with pytest.raises(ValueError):
+        call_request_to_rpc(
+            {"accessList": [{"storageKeys": ["0x" + "11" * 32]}]}
+        )
+
+
+def test_access_list_non_string_storage_key_raises():
+    with pytest.raises(ValueError):
+        call_request_to_rpc(
+            {"accessList": [{"address": "0x" + "ab" * 20, "storageKeys": [123]}]}
+        )
+
+
+def test_data_field_rejects_non_hex():
+    with pytest.raises(ValueError):
+        call_request_to_rpc({"data": "0xZZ"})
+
+
+def test_data_field_rejects_odd_length():
+    with pytest.raises(ValueError):
+        call_request_to_rpc({"data": "0xabc"})
+
+
+def test_data_field_accepts_empty_hex():
+    rpc, _ = call_request_to_rpc({"data": "0x"})
+    assert rpc["data"] == "0x"
