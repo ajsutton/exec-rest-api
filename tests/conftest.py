@@ -22,6 +22,7 @@ from exec_rest_api.handlers import (
     accounts,
     blocks,
     chain,
+    computed,
     gas,
     health,
     logs,
@@ -112,6 +113,7 @@ async def proxy_client(anvil_url, aiohttp_client):
         accounts.register_routes(app)
         logs.register_routes(app)
         traces.register_routes(app)
+        computed.register_routes(app)
         utils_keccak.register_routes(app)
         client = await aiohttp_client(app)
         yield client
