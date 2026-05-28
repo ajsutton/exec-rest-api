@@ -22,7 +22,7 @@ from aiohttp import web
 from exec_rest_api.encoding import EncodingError, map_address_lowercase
 from exec_rest_api.errors import Problem, problem_response
 from exec_rest_api.handlers.blocks import block_header_from_rpc
-from exec_rest_api.handlers.transactions import log_from_rpc
+from exec_rest_api.handlers.transactions import log_from_rpc, transaction_from_rpc
 from exec_rest_api.server import add_get
 from exec_rest_api.sse import format_event, format_retry, stream_with_heartbeat
 from exec_rest_api.subscriptions import GAP, StreamEvent, SubscriptionUnavailable
@@ -200,6 +200,32 @@ async def get_streams_logs(request: web.Request) -> web.StreamResponse:
     )
 
 
+def _pending_event_hash_only(payload: Any) -> tuple[str, str | None, Any]:
+    # Upstream sends just the tx hash as a string when subscribed without `true`.
+    tx_hash = payload if isinstance(payload, str) else payload.get("hash")
+    return "pending-transaction", tx_hash, {"hash": tx_hash}
+
+
+def _pending_event_full(payload: Any) -> tuple[str, str | None, Any]:
+    rest_tx = transaction_from_rpc(payload)
+    return "pending-transaction", rest_tx["hash"], rest_tx
+
+
+async def get_streams_pending(request: web.Request) -> web.StreamResponse:
+    full_raw = request.query.get("full")
+    full = full_raw is not None and full_raw.lower() == "true"
+    formatter = _pending_event_full if full else _pending_event_hash_only
+    params = True if full else None
+    return await _run_stream(
+        request,
+        kind="newPendingTransactions",
+        params=params,
+        formatter=formatter,
+        gap_event_name="resumed",
+    )
+
+
 def register_routes(app: web.Application) -> None:
     add_get(app, "/streams/blocks", get_streams_blocks)
     add_get(app, "/streams/logs", get_streams_logs)
+    add_get(app, "/streams/pending-transactions", get_streams_pending)

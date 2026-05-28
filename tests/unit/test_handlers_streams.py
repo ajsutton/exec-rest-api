@@ -196,3 +196,34 @@ async def test_streams_logs_rejects_bad_address(aiohttp_client):
     assert resp.status == 400
     body = await resp.json()
     assert body["type"].endswith("/invalid-request")
+
+
+async def test_streams_pending_hash_only(aiohttp_client):
+    mgr = FakeManager()
+    client = await _build_client(aiohttp_client, mgr)
+    resp = await client.get("/streams/pending-transactions")
+    assert resp.status == 200
+    assert mgr.subscribe_calls == [("newPendingTransactions", None)]
+
+    mgr.emit("0x" + "ab" * 32)
+    text = b""
+    deadline = asyncio.get_event_loop().time() + 1.0
+    while b"event: pending-transaction" not in text:
+        if asyncio.get_event_loop().time() > deadline:
+            pytest.fail(f"never saw event: pending-transaction; got {text!r}")
+        text += await resp.content.read(256)
+    assert b'"hash":"0x' in text
+    assert b"id: 0xabababababab" in text
+    mgr.close()
+    await resp.release()
+
+
+async def test_streams_pending_full(aiohttp_client):
+    """?full=true forwards `true` as the second arg to eth_subscribe."""
+    mgr = FakeManager()
+    client = await _build_client(aiohttp_client, mgr)
+    resp = await client.get("/streams/pending-transactions?full=true")
+    assert resp.status == 200
+    assert mgr.subscribe_calls == [("newPendingTransactions", True)]
+    mgr.close()
+    await resp.release()
