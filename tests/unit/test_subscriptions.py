@@ -57,7 +57,7 @@ def fake_ws() -> FakeWebSocket:
     return FakeWebSocket()
 
 
-async def _drive_with_subscription(mgr: SubscriptionManager, fake_ws: FakeWebSocket) -> None:
+def _drive_with_subscription(mgr: SubscriptionManager, fake_ws: FakeWebSocket) -> None:
     """Wire fake_ws's notification/reconnect callbacks to the manager."""
     fake_ws.on_notification = mgr.on_notification
     fake_ws.on_reconnect = mgr.on_reconnect
@@ -65,7 +65,7 @@ async def _drive_with_subscription(mgr: SubscriptionManager, fake_ws: FakeWebSoc
 
 async def test_subscribe_calls_upstream_once_per_kind(fake_ws):
     mgr = SubscriptionManager(ws=fake_ws)
-    await _drive_with_subscription(mgr, fake_ws)
+    _drive_with_subscription(mgr, fake_ws)
     sub_a = await mgr.subscribe(kind="newHeads", params=None)
     sub_b = await mgr.subscribe(kind="newHeads", params=None)
     try:
@@ -86,11 +86,9 @@ async def test_subscribe_calls_upstream_once_per_kind(fake_ws):
 
 async def test_unsubscribe_when_last_consumer_leaves(fake_ws):
     mgr = SubscriptionManager(ws=fake_ws)
-    await _drive_with_subscription(mgr, fake_ws)
+    _drive_with_subscription(mgr, fake_ws)
     sub = await mgr.subscribe(kind="newHeads", params=None)
     await sub.aclose()
-    # Allow background cleanup to run
-    await asyncio.sleep(0)
     methods = [m for m, _ in fake_ws.request_log]
     assert "eth_subscribe" in methods
     assert "eth_unsubscribe" in methods
@@ -98,7 +96,7 @@ async def test_unsubscribe_when_last_consumer_leaves(fake_ws):
 
 async def test_distinct_params_get_distinct_subscriptions(fake_ws):
     mgr = SubscriptionManager(ws=fake_ws)
-    await _drive_with_subscription(mgr, fake_ws)
+    _drive_with_subscription(mgr, fake_ws)
     sub_a = await mgr.subscribe(kind="logs", params={"address": "0xa"})
     sub_b = await mgr.subscribe(kind="logs", params={"address": "0xb"})
     try:
@@ -111,7 +109,7 @@ async def test_distinct_params_get_distinct_subscriptions(fake_ws):
 
 async def test_gap_emitted_on_reconnect(fake_ws):
     mgr = SubscriptionManager(ws=fake_ws)
-    await _drive_with_subscription(mgr, fake_ws)
+    _drive_with_subscription(mgr, fake_ws)
     sub = await mgr.subscribe(kind="newHeads", params=None)
     try:
         # Pre-reconnect: subscription id is "0x1"
@@ -132,6 +130,20 @@ async def test_gap_emitted_on_reconnect(fake_ws):
 async def test_subscribe_raises_when_ws_unavailable(fake_ws):
     fake_ws.connected = False
     mgr = SubscriptionManager(ws=fake_ws)
-    await _drive_with_subscription(mgr, fake_ws)
+    _drive_with_subscription(mgr, fake_ws)
+    with pytest.raises(SubscriptionUnavailable):
+        await mgr.subscribe(kind="newHeads", params=None)
+
+
+async def test_subscribe_translates_ws_closed_to_unavailable():
+    from exec_rest_api.upstream_ws import UpstreamWsClosed
+
+    class FlakyWs:
+        connected = True
+
+        async def request(self, method: str, params=None):
+            raise UpstreamWsClosed("connection lost mid-subscribe")
+
+    mgr = SubscriptionManager(ws=FlakyWs())
     with pytest.raises(SubscriptionUnavailable):
         await mgr.subscribe(kind="newHeads", params=None)

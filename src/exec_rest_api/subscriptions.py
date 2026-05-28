@@ -15,6 +15,8 @@ from collections.abc import AsyncIterator, Callable, Coroutine
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
+from exec_rest_api.upstream_ws import UpstreamWsClosed
+
 logger = logging.getLogger("exec_rest_api.subscriptions")
 
 StreamKind = Literal["newHeads", "logs", "newPendingTransactions", "syncing"]
@@ -52,7 +54,10 @@ def _canonicalize(params: Any) -> str:
 
 @dataclass
 class _Slot:
-    """One upstream subscription and its consumer queues."""
+    """One upstream subscription and its consumer queues.
+
+    `subscription_id` is only `None` transiently during the reconnect window.
+    """
 
     kind: StreamKind
     params: Any
@@ -102,6 +107,14 @@ class SubscriptionManager:
         self._slot_by_subscription_id: dict[str, _Slot] = {}
         self._lock = asyncio.Lock()
 
+    # ── internal helpers ──────────────────────────────────────────────────
+
+    def _enqueue(self, q: asyncio.Queue[StreamEvent], event: StreamEvent, kind: StreamKind) -> None:
+        try:
+            q.put_nowait(event)
+        except asyncio.QueueFull:
+            logger.warning("dropping event for slow consumer on %s", kind)
+
     # ── public callbacks for UpstreamWebSocket ────────────────────────────
 
     def on_notification(self, payload: dict[str, Any]) -> None:
@@ -114,10 +127,7 @@ class SubscriptionManager:
             return
         event = StreamEvent(kind="event", payload=params.get("result"))
         for q in slot.consumers:
-            try:
-                q.put_nowait(event)
-            except asyncio.QueueFull:
-                logger.warning("dropping event for slow consumer on %s", slot.kind)
+            self._enqueue(q, event, slot.kind)
 
     async def on_reconnect(self) -> None:
         """Re-issue all active subscriptions and notify all consumers of the gap."""
@@ -131,12 +141,12 @@ class SubscriptionManager:
                 except Exception as exc:
                     logger.warning("re-subscribe failed for %s: %r", slot.kind, exc)
                     for q in slot.consumers:
-                        q.put_nowait(GAP)
+                        self._enqueue(q, GAP, slot.kind)
                     continue
                 slot.subscription_id = new_id
                 self._slot_by_subscription_id[new_id] = slot
                 for q in slot.consumers:
-                    q.put_nowait(GAP)
+                    self._enqueue(q, GAP, slot.kind)
 
     # ── public subscribe API ──────────────────────────────────────────────
 
@@ -157,7 +167,10 @@ class SubscriptionManager:
             slot = self._slots.get(key)
             if slot is None:
                 params_list = _params_to_subscribe_args(kind, params)
-                sub_id = await self._ws.request("eth_subscribe", params_list)
+                try:
+                    sub_id = await self._ws.request("eth_subscribe", params_list)
+                except UpstreamWsClosed as exc:
+                    raise SubscriptionUnavailable(str(exc)) from exc
                 slot = _Slot(
                     kind=kind, params=params, subscription_id=sub_id, consumers=[queue]
                 )
