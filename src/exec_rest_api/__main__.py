@@ -103,10 +103,8 @@ async def _run(config: Config) -> None:
         ws_client.on_notification = subscriptions.on_notification
         ws_client.on_reconnect = subscriptions.on_reconnect
 
-        ws_started = False
         try:
             await asyncio.wait_for(ws_client.start(), timeout=5.0)
-            ws_started = True
         except (asyncio.TimeoutError, Exception) as exc:
             logging.getLogger("exec_rest_api").warning(
                 "upstream WS unreachable at startup (%r); /streams/* will 503 until it recovers",
@@ -148,8 +146,7 @@ async def _run(config: Config) -> None:
                 loop.add_signal_handler(sig, stop_event.set)
         await stop_event.wait()
         await runner.cleanup()
-        if ws_started:
-            await ws_client.stop()
+        await ws_client.stop()
 
 
 def main(argv: list[str] | None = None) -> int:

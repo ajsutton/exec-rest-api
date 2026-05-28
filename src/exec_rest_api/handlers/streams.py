@@ -111,6 +111,10 @@ async def _run_stream(
             await replay(request, resp, last_event_id)
         except Exception:
             logger.exception("replay failed on %s", kind)
+    elif last_event_id is not None:
+        # Spec §7.3: pending-transactions and sync-status have no replay,
+        # but emit a one-time `event: resumed` so the client sees the stream resumed.
+        await resp.write(format_event(event=gap_event_name, id_=None, data={}))
 
     async def to_bytes() -> AsyncIterator[bytes]:
         async for event in events:

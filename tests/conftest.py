@@ -140,5 +140,4 @@ async def proxy_client(anvil_url, aiohttp_client):
             client = await aiohttp_client(app)
             yield client
         finally:
-            if ws_client.connected:
-                await ws_client.stop()
+            await ws_client.stop()

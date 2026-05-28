@@ -7,6 +7,7 @@ backoff are covered in test_upstream_ws_reconnect.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from typing import Any
 
@@ -271,3 +272,25 @@ async def test_backoff_schedule_clamped(aiohttp_server):
             backoff_schedule=(1.0, 2.0, 5.0, 30.0),
         )
         assert client._backoff == (1.0, 2.0, 5.0, 30.0)
+
+
+async def test_stop_cleans_up_after_start_timeout():
+    """If start() is cancelled mid-connect, stop() must still cancel the background task."""
+    async with ClientSession() as session:
+        client = UpstreamWebSocket(
+            session=session,
+            url="ws://127.0.0.1:1",  # unreachable, but reconnect=True so it keeps trying
+            on_notification=lambda _: None,
+            backoff_schedule=(0.5,),
+        )
+        start_task = asyncio.create_task(client.start())
+        await asyncio.sleep(0.1)  # let _run_forever spin up
+        start_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await start_task
+        # The internal task should still be running
+        assert client._task is not None
+        assert not client._task.done()
+        # stop() must terminate it
+        await client.stop()
+        assert client._task.done()

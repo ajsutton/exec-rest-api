@@ -361,3 +361,48 @@ async def test_streams_blocks_replay_beyond_window_emits_gap(aiohttp_client):
         text += await resp.content.read(256)
     mgr.close()
     await resp.release()
+
+
+async def test_streams_pending_resumed_on_last_event_id(aiohttp_client):
+    """A client reconnecting with Last-Event-ID gets one `event: resumed` and live continues."""
+    mgr = FakeManager()
+    client = await _build_client(aiohttp_client, mgr)
+    resp = await client.get(
+        "/streams/pending-transactions", headers={"Last-Event-ID": "0xabc"}
+    )
+    assert resp.status == 200
+
+    # First frame after the retry directive should be event: resumed
+    text = b""
+    deadline = asyncio.get_event_loop().time() + 1.0
+    while b"event: resumed" not in text:
+        if asyncio.get_event_loop().time() > deadline:
+            pytest.fail(f"never saw event: resumed; got {text!r}")
+        text += await resp.content.read(256)
+
+    # And the live stream still works
+    mgr.emit("0x" + "ab" * 32)
+    while b"event: pending-transaction" not in text:
+        if asyncio.get_event_loop().time() > deadline + 1.0:
+            pytest.fail(f"never saw pending-transaction; got {text!r}")
+        text += await resp.content.read(256)
+    mgr.close()
+    await resp.release()
+
+
+async def test_streams_sync_status_resumed_on_last_event_id(aiohttp_client):
+    """Same for sync-status."""
+    mgr = FakeManager()
+    client = await _build_client(aiohttp_client, mgr)
+    resp = await client.get(
+        "/streams/sync-status", headers={"Last-Event-ID": "anything"}
+    )
+    assert resp.status == 200
+    text = b""
+    deadline = asyncio.get_event_loop().time() + 1.0
+    while b"event: resumed" not in text:
+        if asyncio.get_event_loop().time() > deadline:
+            pytest.fail(f"never saw event: resumed; got {text!r}")
+        text += await resp.content.read(256)
+    mgr.close()
+    await resp.release()
