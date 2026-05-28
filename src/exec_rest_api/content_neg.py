@@ -19,8 +19,10 @@ CONTENT_TYPE_RLP: Final[str] = "application/vnd.ethereum.rlp"
 def select_representation(accept_header: str | None, supported: list[str]) -> str | None:
     """Pick the best supported representation for the client's Accept header.
 
-    `supported` is in server preference order — used as a tiebreaker for `*/*`
-    and equal q-values.
+    `supported` is in server preference order — used to resolve the wildcard
+    cases (`*/*` and `application/*`) and chosen when the client omits or
+    empties the Accept header. For explicit types with equal q-values, the
+    client's declaration order wins (stable sort).
     """
     if not accept_header or not accept_header.strip():
         return supported[0]

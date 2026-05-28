@@ -1,7 +1,5 @@
 """Tests for the Accept-header parser."""
 
-import pytest
-
 from exec_rest_api.content_neg import (
     CONTENT_TYPE_JSON,
     CONTENT_TYPE_RLP,
