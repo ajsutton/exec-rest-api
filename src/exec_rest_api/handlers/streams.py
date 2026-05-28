@@ -13,18 +13,23 @@ Shared driver:
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from typing import Any, cast
 
 from aiohttp import web
 
+from exec_rest_api.encoding import EncodingError, map_address_lowercase
 from exec_rest_api.errors import Problem, problem_response
 from exec_rest_api.handlers.blocks import block_header_from_rpc
+from exec_rest_api.handlers.transactions import log_from_rpc
 from exec_rest_api.server import add_get
 from exec_rest_api.sse import format_event, format_retry, stream_with_heartbeat
 from exec_rest_api.subscriptions import GAP, StreamEvent, SubscriptionUnavailable
 
 logger = logging.getLogger("exec_rest_api.handlers.streams")
+
+_TOPIC_RE = re.compile(r"^0x[0-9a-fA-F]{64}$")
 
 
 EventFormatter = Callable[[Any], tuple[str, str | None, Any]]
@@ -136,5 +141,65 @@ async def get_streams_blocks(request: web.Request) -> web.StreamResponse:
     )
 
 
+def _log_event(payload: Any) -> tuple[str, str | None, Any]:
+    rest_log = log_from_rpc(payload)
+    return "log", f"{rest_log['blockNumber']}-{rest_log['logIndex']}", rest_log
+
+
+def _parse_log_filter(request: web.Request) -> dict[str, Any] | web.Response:
+    """Build an eth_subscribe('logs', filter) params dict from query params, or
+    a 400 Problem response if the params are malformed."""
+    filter_: dict[str, Any] = {}
+    addr_raw = request.query.get("address")
+    if addr_raw:
+        addrs: list[str] = []
+        for piece in addr_raw.split(","):
+            try:
+                addrs.append(map_address_lowercase(piece.strip()))
+            except EncodingError as e:
+                return problem_response(
+                    Problem(
+                        status=400,
+                        type_slug="invalid-request",
+                        title="Invalid request",
+                        detail=str(e),
+                        instance=request.path,
+                    )
+                )
+        filter_["address"] = addrs
+    topics: list[str | None] = []
+    last_set = -1
+    for i in range(4):
+        val = request.query.get(f"topic{i}")
+        if val is None:
+            topics.append(None)
+        else:
+            if not _TOPIC_RE.fullmatch(val):
+                return problem_response(
+                    Problem(
+                        status=400,
+                        type_slug="invalid-request",
+                        title="Invalid request",
+                        detail=f"topic{i} must be 0x-prefixed 32-byte hex, got {val!r}",
+                        instance=request.path,
+                    )
+                )
+            topics.append(val.lower())
+            last_set = i
+    if last_set >= 0:
+        filter_["topics"] = topics[: last_set + 1]
+    return filter_
+
+
+async def get_streams_logs(request: web.Request) -> web.StreamResponse:
+    filter_or_err = _parse_log_filter(request)
+    if isinstance(filter_or_err, web.Response):
+        return filter_or_err
+    return await _run_stream(
+        request, kind="logs", params=filter_or_err, formatter=_log_event
+    )
+
+
 def register_routes(app: web.Application) -> None:
     add_get(app, "/streams/blocks", get_streams_blocks)
+    add_get(app, "/streams/logs", get_streams_logs)

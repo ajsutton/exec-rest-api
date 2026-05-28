@@ -143,3 +143,56 @@ async def test_streams_blocks_returns_503_when_ws_unavailable(aiohttp_client):
     assert resp.status == 503
     body = await resp.json()
     assert body["type"].endswith("/upstream-unavailable")
+
+
+async def test_streams_logs_passes_filter_to_subscribe(aiohttp_client):
+    mgr = FakeManager()
+    client = await _build_client(aiohttp_client, mgr)
+    addr = "0x" + "ab" * 20
+    topic = "0x" + "cd" * 32
+    resp = await client.get(f"/streams/logs?address={addr}&topic0={topic}")
+    assert resp.status == 200
+    # Subscribe was called with the upstream filter shape
+    assert mgr.subscribe_calls == [
+        ("logs", {"address": [addr.lower()], "topics": [topic.lower()]})
+    ]
+
+    rpc_log = {
+        "address": addr,
+        "topics": [topic],
+        "data": "0x",
+        "blockHash": "0x" + "00" * 32,
+        "blockNumber": "0x10",
+        "transactionHash": "0x" + "11" * 32,
+        "transactionIndex": "0x0",
+        "logIndex": "0x2",
+        "removed": False,
+    }
+    mgr.emit(rpc_log)
+    text = b""
+    deadline = asyncio.get_event_loop().time() + 1.0
+    while b"event: log" not in text:
+        if asyncio.get_event_loop().time() > deadline:
+            pytest.fail(f"never saw event: log; got {text!r}")
+        text += await resp.content.read(512)
+    assert b"id: 16-2" in text
+    mgr.close()
+    await resp.release()
+
+
+async def test_streams_logs_rejects_bad_topic(aiohttp_client):
+    mgr = FakeManager()
+    client = await _build_client(aiohttp_client, mgr)
+    resp = await client.get("/streams/logs?topic0=0xnothex")
+    assert resp.status == 400
+    body = await resp.json()
+    assert body["type"].endswith("/invalid-request")
+
+
+async def test_streams_logs_rejects_bad_address(aiohttp_client):
+    mgr = FakeManager()
+    client = await _build_client(aiohttp_client, mgr)
+    resp = await client.get("/streams/logs?address=0xshort")
+    assert resp.status == 400
+    body = await resp.json()
+    assert body["type"].endswith("/invalid-request")
