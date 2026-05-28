@@ -527,3 +527,46 @@ async def test_get_block_406_for_unsupported_accept(aiohttp_client):
     client = await _build_client(aiohttp_client, mock)
     resp = await client.get("/blocks/0", headers={"Accept": "text/html"})
     assert resp.status == 406
+
+
+# ─── POST /blocks/{id}/traces/replay ──────────────────────────────────────
+
+
+async def test_post_block_trace_replay(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    mock.call.return_value = [{"output": "0x"}]
+    client = await _build_client(aiohttp_client, mock)
+    resp = await client.post("/blocks/100/traces/replay", json={"tracers": ["trace"]})
+    assert resp.status == 200
+    mock.call.assert_awaited_once_with("trace_replayBlockTransactions", ["0x64", ["trace"]])
+
+
+async def test_post_block_trace_replay_by_hash(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    mock.call.return_value = []
+    client = await _build_client(aiohttp_client, mock)
+    h = "0x" + "ab" * 32
+    resp = await client.post(f"/blocks/{h}/traces/replay", json={"tracers": ["trace"]})
+    assert resp.status == 200
+    mock.call.assert_awaited_once_with("trace_replayBlockTransactions", [h, ["trace"]])
+
+
+async def test_post_block_debug_traces_by_number(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    mock.call.return_value = []
+    client = await _build_client(aiohttp_client, mock)
+    resp = await client.post("/blocks/50/debug-traces", json={"tracer": "callTracer"})
+    assert resp.status == 200
+    mock.call.assert_awaited_once_with(
+        "debug_traceBlockByNumber", ["0x32", {"tracer": "callTracer"}]
+    )
+
+
+async def test_post_block_debug_traces_by_hash(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    mock.call.return_value = []
+    client = await _build_client(aiohttp_client, mock)
+    h = "0x" + "cd" * 32
+    resp = await client.post(f"/blocks/{h}/debug-traces", json={})
+    assert resp.status == 200
+    mock.call.assert_awaited_once_with("debug_traceBlockByHash", [h, {}])

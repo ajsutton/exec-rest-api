@@ -327,9 +327,50 @@ async def post_transaction(request: web.Request) -> web.Response:
     )
 
 
+async def post_trace_replay(request: web.Request) -> web.Response:
+    tx_hash = _validate_tx_hash(request.match_info["hash"])
+    if tx_hash is None:
+        return _bad_hash(request.path)
+    try:
+        body = await request.json()
+    except (ValueError, TypeError):
+        return _bad_request(request.path, "request body must be valid JSON")
+    tracers = body.get("tracers") if isinstance(body, dict) else None
+    if not isinstance(tracers, list) or not tracers:
+        return _bad_request(request.path, "field `tracers` (non-empty array) is required")
+    allowed = {"trace", "vmTrace", "stateDiff"}
+    for t in tracers:
+        if t not in allowed:
+            return _bad_request(request.path, f"unknown tracer {t!r}")
+    upstream: UpstreamClient = request.app["upstream"]
+    result = await upstream.call("trace_replayTransaction", [tx_hash, list(tracers)])
+    return web.json_response(result)
+
+
+async def post_debug_trace(request: web.Request) -> web.Response:
+    tx_hash = _validate_tx_hash(request.match_info["hash"])
+    if tx_hash is None:
+        return _bad_hash(request.path)
+    try:
+        body = await request.json()
+    except (ValueError, TypeError):
+        return _bad_request(request.path, "request body must be valid JSON")
+    if body is None:
+        body = {}
+    if not isinstance(body, dict):
+        return _bad_request(request.path, "request body must be a JSON object")
+    upstream: UpstreamClient = request.app["upstream"]
+    result = await upstream.call("debug_traceTransaction", [tx_hash, body])
+    return web.json_response(result)
+
+
 def register_routes(app: web.Application) -> None:
     add_get(app, "/transactions/{hash}", get_transaction)
     add_get(app, "/transactions/{hash}/receipt", get_receipt)
     add_get(app, "/transactions/{hash}/trace", get_trace)
     app.router.add_post("/transactions", post_transaction)
     app.router.add_post("/transactions/", post_transaction)
+    app.router.add_post("/transactions/{hash}/trace/replay", post_trace_replay)
+    app.router.add_post("/transactions/{hash}/trace/replay/", post_trace_replay)
+    app.router.add_post("/transactions/{hash}/debug-trace", post_debug_trace)
+    app.router.add_post("/transactions/{hash}/debug-trace/", post_debug_trace)

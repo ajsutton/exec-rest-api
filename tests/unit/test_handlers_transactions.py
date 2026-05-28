@@ -456,3 +456,51 @@ async def test_get_transaction_rlp_not_found_404(aiohttp_client):
     )
     assert resp.status == 404
     mock.call.assert_awaited_once_with("debug_getRawTransaction", ["0x" + "aa" * 32])
+
+
+# ─── POST /transactions/{hash}/trace/replay ───────────────────────────────
+
+
+async def test_post_trace_replay(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    mock.call.return_value = {"output": "0x", "trace": []}
+    client = await _build_client(aiohttp_client, mock)
+    h = "0x" + "aa" * 32
+    resp = await client.post(
+        f"/transactions/{h}/trace/replay",
+        json={"tracers": ["trace"]},
+    )
+    assert resp.status == 200
+    mock.call.assert_awaited_once_with("trace_replayTransaction", [h, ["trace"]])
+
+
+async def test_post_trace_replay_missing_tracers_400(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    client = await _build_client(aiohttp_client, mock)
+    resp = await client.post(
+        f"/transactions/{'0x' + 'aa' * 32}/trace/replay", json={}
+    )
+    assert resp.status == 400
+
+
+async def test_post_tx_debug_trace(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    mock.call.return_value = {"gas": "0x5208", "structLogs": []}
+    client = await _build_client(aiohttp_client, mock)
+    h = "0x" + "aa" * 32
+    resp = await client.post(
+        f"/transactions/{h}/debug-trace",
+        json={"tracer": "callTracer"},
+    )
+    assert resp.status == 200
+    mock.call.assert_awaited_once_with("debug_traceTransaction", [h, {"tracer": "callTracer"}])
+
+
+async def test_post_tx_debug_trace_empty_body_ok(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    mock.call.return_value = {}
+    client = await _build_client(aiohttp_client, mock)
+    h = "0x" + "aa" * 32
+    resp = await client.post(f"/transactions/{h}/debug-trace", json={})
+    assert resp.status == 200
+    mock.call.assert_awaited_once_with("debug_traceTransaction", [h, {}])

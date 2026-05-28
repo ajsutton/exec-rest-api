@@ -139,6 +139,18 @@ def _not_acceptable(path: str, supported: list[str]) -> web.Response:
     )
 
 
+def _bad_request(path: str, detail: str) -> web.Response:
+    return problem_response(
+        Problem(
+            status=400,
+            type_slug="invalid-request",
+            title="Invalid request",
+            detail=detail,
+            instance=path,
+        )
+    )
+
+
 def _hex_to_bytes(hex_str: str) -> bytes:
     """Decode a hex string with or without `0x` prefix into bytes."""
     return bytes.fromhex(hex_str[2:] if hex_str.startswith("0x") else hex_str)
@@ -295,6 +307,48 @@ async def get_block_traces(request: web.Request) -> web.Response:
     return web.json_response([trace_from_rpc(t) for t in rpc])
 
 
+async def post_block_traces_replay(request: web.Request) -> web.Response:
+    bid, err = _parse_id(request.match_info["id"], request.path)
+    if err is not None:
+        return err
+    assert bid is not None
+    try:
+        body = await request.json()
+    except (ValueError, TypeError):
+        return _bad_request(request.path, "request body must be valid JSON")
+    tracers = body.get("tracers") if isinstance(body, dict) else None
+    if not isinstance(tracers, list) or not tracers:
+        return _bad_request(request.path, "field `tracers` (non-empty array) is required")
+    allowed = {"trace", "vmTrace", "stateDiff"}
+    for t in tracers:
+        if t not in allowed:
+            return _bad_request(request.path, f"unknown tracer {t!r}")
+    upstream: UpstreamClient = request.app["upstream"]
+    result = await upstream.call(
+        "trace_replayBlockTransactions", [bid.to_rpc_param(), list(tracers)]
+    )
+    return web.json_response(result)
+
+
+async def post_block_debug_traces(request: web.Request) -> web.Response:
+    bid, err = _parse_id(request.match_info["id"], request.path)
+    if err is not None:
+        return err
+    assert bid is not None
+    try:
+        body = await request.json()
+    except (ValueError, TypeError):
+        return _bad_request(request.path, "request body must be valid JSON")
+    if body is None:
+        body = {}
+    if not isinstance(body, dict):
+        return _bad_request(request.path, "request body must be a JSON object")
+    method = "debug_traceBlockByHash" if bid.is_hash() else "debug_traceBlockByNumber"
+    upstream: UpstreamClient = request.app["upstream"]
+    result = await upstream.call(method, [bid.to_rpc_param(), body])
+    return web.json_response(result)
+
+
 def register_routes(app: web.Application) -> None:
     add_get(app, "/blocks/{id}", get_block)
     add_get(app, "/blocks/{id}/header", get_block_header)
@@ -303,3 +357,7 @@ def register_routes(app: web.Application) -> None:
     add_get(app, "/blocks/{id}/transaction-count", get_block_transaction_count)
     add_get(app, "/blocks/{id}/receipts", get_block_receipts)
     add_get(app, "/blocks/{id}/traces", get_block_traces)
+    app.router.add_post("/blocks/{id}/traces/replay", post_block_traces_replay)
+    app.router.add_post("/blocks/{id}/traces/replay/", post_block_traces_replay)
+    app.router.add_post("/blocks/{id}/debug-traces", post_block_debug_traces)
+    app.router.add_post("/blocks/{id}/debug-traces/", post_block_debug_traces)
