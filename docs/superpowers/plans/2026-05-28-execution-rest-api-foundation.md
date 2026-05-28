@@ -329,7 +329,7 @@ def test_block_id_to_rpc_param_number_is_hex():
     # JSON-RPC takes block numbers as 0x-hex
     assert BlockId(number=0).to_rpc_param() == "0x0"
     assert BlockId(number=255).to_rpc_param() == "0xff"
-    assert BlockId(number=18234567).to_rpc_param() == "0x1162d47"
+    assert BlockId(number=18234567).to_rpc_param() == "0x1163cc7"
 
 
 def test_block_id_to_rpc_param_hash():
