@@ -67,8 +67,8 @@ class UpstreamWebSocket:
     ) -> None:
         self._session = session
         self._url = url
-        self._on_notification = on_notification
-        self._on_reconnect = on_reconnect
+        self.on_notification = on_notification
+        self.on_reconnect = on_reconnect
         self._reconnect = reconnect
         self._backoff = backoff_schedule
         self._id_counter = itertools.count(1)
@@ -136,8 +136,8 @@ class UpstreamWebSocket:
                     attempt = 0
                     is_reconnect = self._connected_event.is_set()
                     self._connected_event.set()
-                    if is_reconnect and self._on_reconnect is not None:
-                        await self._on_reconnect()
+                    if is_reconnect and self.on_reconnect is not None:
+                        await self.on_reconnect()
                     await self._read_loop(ws)
             except asyncio.CancelledError:
                 raise
@@ -175,7 +175,7 @@ class UpstreamWebSocket:
             return
         if "method" in payload and "id" not in payload:
             try:
-                self._on_notification(payload)
+                self.on_notification(payload)
             except Exception:
                 logger.exception("notification handler raised")
             return

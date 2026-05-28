@@ -42,7 +42,8 @@ GAP = StreamEvent(kind="gap")
 
 
 class _WebSocketLike(Protocol):
-    connected: bool
+    @property
+    def connected(self) -> bool: ...
 
     async def request(self, method: str, params: list[Any] | None = None) -> Any: ...
 

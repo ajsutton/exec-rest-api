@@ -27,8 +27,11 @@ from exec_rest_api.handlers import (
     transactions,
     utils_keccak,
 )
+from exec_rest_api.handlers import streams as streams_handler
 from exec_rest_api.server import create_app
+from exec_rest_api.subscriptions import SubscriptionManager
 from exec_rest_api.upstream import UpstreamClient
+from exec_rest_api.upstream_ws import UpstreamWebSocket
 
 
 def _setup_logging(level: str, format_: str | None) -> None:
@@ -88,7 +91,30 @@ async def _run(config: Config) -> None:
             http_url=config.upstream_http,
             default_timeout_seconds=config.upstream_timeout_seconds,
         )
+
+        # WebSocket + subscription manager. If the WS endpoint can't be reached,
+        # we still serve the REST surface; /streams/* return 503 until WS recovers.
+        ws_client = UpstreamWebSocket(
+            session=session,
+            url=config.upstream_ws,
+            on_notification=lambda _: None,  # rewired below once manager exists
+        )
+        subscriptions = SubscriptionManager(ws=ws_client)
+        ws_client.on_notification = subscriptions.on_notification
+        ws_client.on_reconnect = subscriptions.on_reconnect
+
+        ws_started = False
+        try:
+            await asyncio.wait_for(ws_client.start(), timeout=5.0)
+            ws_started = True
+        except (asyncio.TimeoutError, Exception) as exc:
+            logging.getLogger("exec_rest_api").warning(
+                "upstream WS unreachable at startup (%r); /streams/* will 503 until it recovers",
+                exc,
+            )
+
         app = create_app(config=config, upstream=upstream)
+        app["subscriptions"] = subscriptions
         health.register_routes(app)
         chain.register_routes(app)
         gas.register_routes(app)
@@ -99,6 +125,7 @@ async def _run(config: Config) -> None:
         traces.register_routes(app)
         computed.register_routes(app)
         utils_keccak.register_routes(app)
+        streams_handler.register_routes(app)
 
         host, port = _split_listen(config.listen)
         runner = web.AppRunner(app, access_log=None)  # we have our own access-log middleware
@@ -121,6 +148,8 @@ async def _run(config: Config) -> None:
                 loop.add_signal_handler(sig, stop_event.set)
         await stop_event.wait()
         await runner.cleanup()
+        if ws_started:
+            await ws_client.stop()
 
 
 def main(argv: list[str] | None = None) -> int:

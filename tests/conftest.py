@@ -7,6 +7,8 @@ inside sub-directory conftests (pytest 7+ rejects those).
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import shutil
 import socket
 import subprocess
@@ -102,9 +104,27 @@ def _build_config(upstream_http: str) -> Config:
 @pytest_asyncio.fixture
 async def proxy_client(anvil_url, aiohttp_client):
     """Build the proxy app talking to anvil and return an aiohttp test client."""
+    from exec_rest_api.handlers import streams as streams_handler
+    from exec_rest_api.subscriptions import SubscriptionManager
+    from exec_rest_api.upstream_ws import UpstreamWebSocket
+
+    ws_url = anvil_url.replace("http://", "ws://")
     async with aiohttp.ClientSession() as session:
         upstream = UpstreamClient(session=session, http_url=anvil_url)
+        ws_client = UpstreamWebSocket(
+            session=session,
+            url=ws_url,
+            on_notification=lambda _: None,
+            backoff_schedule=(0.1,),
+        )
+        manager = SubscriptionManager(ws=ws_client)
+        ws_client.on_notification = manager.on_notification
+        ws_client.on_reconnect = manager.on_reconnect
+        with contextlib.suppress(asyncio.TimeoutError, Exception):
+            await asyncio.wait_for(ws_client.start(), timeout=5.0)
+
         app = create_app(config=_build_config(anvil_url), upstream=upstream)
+        app["subscriptions"] = manager
         health.register_routes(app)
         chain.register_routes(app)
         gas.register_routes(app)
@@ -115,5 +135,10 @@ async def proxy_client(anvil_url, aiohttp_client):
         traces.register_routes(app)
         computed.register_routes(app)
         utils_keccak.register_routes(app)
-        client = await aiohttp_client(app)
-        yield client
+        streams_handler.register_routes(app)
+        try:
+            client = await aiohttp_client(app)
+            yield client
+        finally:
+            if ws_client.connected:
+                await ws_client.stop()
