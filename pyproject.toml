@@ -24,6 +24,7 @@ Homepage = "https://github.com/ajsutton/exec-rest-api"
 dev = [
   "pytest>=8",
   "pytest-asyncio>=0.23",
+  "pytest-aiohttp>=1.0",
   "hypothesis>=6",
   "ruff>=0.5",
   "mypy>=1.10",
