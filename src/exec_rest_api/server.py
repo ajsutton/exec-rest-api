@@ -15,12 +15,14 @@ from __future__ import annotations
 import logging
 import time
 import uuid
+from typing import Any
 
 from aiohttp import web
 from aiohttp.typedefs import Handler
 
 from exec_rest_api.config import Config
 from exec_rest_api.errors import Problem, map_jsonrpc_error, problem_response
+from exec_rest_api.metrics import Metrics, current_request_upstream_methods
 from exec_rest_api.upstream import UpstreamClient, UpstreamError, UpstreamJsonRpcError
 
 logger = logging.getLogger("exec_rest_api")
@@ -58,6 +60,51 @@ async def access_log_middleware(request: web.Request, handler: Handler) -> web.S
                 "latency_ms": elapsed_ms,
             },
         )
+
+
+def _path_template(request: web.Request) -> str:
+    """The matched route template (e.g. ``/blocks/{id}``) or ``__not_found__``."""
+    match_info = request.match_info
+    route = match_info.route if match_info is not None else None
+    resource = route.resource if route is not None else None
+    if resource is None:
+        return "__not_found__"
+    return resource.canonical
+
+
+@web.middleware
+async def metrics_middleware(request: web.Request, handler: Handler) -> web.StreamResponse:
+    metrics: Metrics | None = request.app.get("metrics")
+    chain_head: Any = request.app.get("chain_head")
+    token = current_request_upstream_methods.set([])
+    start = time.monotonic()
+    status = 500
+    response: web.StreamResponse | None = None
+    try:
+        response = await handler(request)
+        status = response.status
+        return response
+    except web.HTTPException as e:
+        status = e.status
+        raise
+    finally:
+        duration = time.monotonic() - start
+        if metrics is not None:
+            metrics.inc_request(
+                method=request.method,
+                path_template=_path_template(request),
+                status=status,
+            )
+            metrics.observe_request_duration(duration)
+        if response is not None:
+            methods = current_request_upstream_methods.get()
+            if methods:
+                response.headers["X-Upstream-Method"] = ",".join(methods)
+            if chain_head is not None:
+                value = getattr(chain_head, "current", None)
+                if value is not None:
+                    response.headers["X-Block-Height"] = str(value)
+        current_request_upstream_methods.reset(token)
 
 
 @web.middleware
@@ -112,6 +159,7 @@ def create_app(*, config: Config, upstream: UpstreamClient) -> web.Application:
         middlewares=[
             request_id_middleware,
             access_log_middleware,
+            metrics_middleware,
             error_mapping_middleware,
         ],
     )

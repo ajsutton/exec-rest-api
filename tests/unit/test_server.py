@@ -141,3 +141,150 @@ async def test_add_get_root_path_unchanged(aiohttp_client):
 
     client = await aiohttp_client(app)
     assert (await (await client.get("/")).text()) == "root"
+
+
+# ── Plan 5: metrics middleware, X-Upstream-Method, X-Block-Height ──────────
+
+
+class _StubChainHead:
+    def __init__(self, value: int | None) -> None:
+        self.current = value
+
+
+async def test_metrics_middleware_counts_and_times(aiohttp_client):
+    from exec_rest_api.metrics import Metrics
+    metrics = Metrics()
+    mock = AsyncMock(spec=UpstreamClient)
+    app = create_app(config=_make_config(), upstream=mock)
+    app["metrics"] = metrics
+
+    async def ok(request: web.Request) -> web.Response:
+        return web.Response(text="ok")
+
+    app.router.add_get("/_test/ok", ok)
+    client = await aiohttp_client(app)
+    await client.get("/_test/ok")
+    out = metrics.render()
+    assert (
+        'exec_rest_api_requests_total{method="GET",path_template="/_test/ok",status="200"} 1'
+        in out
+    )
+    assert "exec_rest_api_request_duration_seconds_count 1" in out
+
+
+async def test_metrics_middleware_path_template_for_dynamic_routes(aiohttp_client):
+    from exec_rest_api.metrics import Metrics
+    metrics = Metrics()
+    mock = AsyncMock(spec=UpstreamClient)
+    app = create_app(config=_make_config(), upstream=mock)
+    app["metrics"] = metrics
+
+    async def ok(request: web.Request) -> web.Response:
+        return web.Response(text="ok")
+
+    app.router.add_get("/_test/{id}", ok)
+    client = await aiohttp_client(app)
+    await client.get("/_test/123")
+    out = metrics.render()
+    assert 'path_template="/_test/{id}"' in out
+
+
+async def test_metrics_middleware_path_template_for_unmatched(aiohttp_client):
+    from exec_rest_api.metrics import Metrics
+    metrics = Metrics()
+    mock = AsyncMock(spec=UpstreamClient)
+    app = create_app(config=_make_config(), upstream=mock)
+    app["metrics"] = metrics
+    client = await aiohttp_client(app)
+    await client.get("/this-does-not-exist")
+    out = metrics.render()
+    assert 'path_template="__not_found__"' in out
+    assert 'status="404"' in out
+
+
+async def test_x_upstream_method_header_from_contextvar(aiohttp_client):
+    from exec_rest_api.metrics import (
+        Metrics,
+        current_request_upstream_methods,
+    )
+    metrics = Metrics()
+    mock = AsyncMock(spec=UpstreamClient)
+    app = create_app(config=_make_config(), upstream=mock)
+    app["metrics"] = metrics
+
+    async def calls_upstream(request: web.Request) -> web.Response:
+        methods = current_request_upstream_methods.get()
+        # Simulate UpstreamClient appending two methods
+        if methods is not None:
+            methods.append("eth_chainId")
+            methods.append("net_version")
+        return web.Response(text="ok")
+
+    app.router.add_get("/_test/multi", calls_upstream)
+    client = await aiohttp_client(app)
+    resp = await client.get("/_test/multi")
+    assert resp.headers["X-Upstream-Method"] == "eth_chainId,net_version"
+
+
+async def test_x_upstream_method_header_absent_when_no_upstream_calls(aiohttp_client):
+    from exec_rest_api.metrics import Metrics
+    metrics = Metrics()
+    mock = AsyncMock(spec=UpstreamClient)
+    app = create_app(config=_make_config(), upstream=mock)
+    app["metrics"] = metrics
+
+    async def no_upstream(request: web.Request) -> web.Response:
+        return web.Response(text="ok")
+
+    app.router.add_get("/_test/no-upstream", no_upstream)
+    client = await aiohttp_client(app)
+    resp = await client.get("/_test/no-upstream")
+    assert "X-Upstream-Method" not in resp.headers
+
+
+async def test_x_block_height_header_from_tracker(aiohttp_client):
+    from exec_rest_api.metrics import Metrics
+    metrics = Metrics()
+    mock = AsyncMock(spec=UpstreamClient)
+    app = create_app(config=_make_config(), upstream=mock)
+    app["metrics"] = metrics
+    app["chain_head"] = _StubChainHead(value=18234567)
+
+    async def ok(request: web.Request) -> web.Response:
+        return web.Response(text="ok")
+
+    app.router.add_get("/_test/height", ok)
+    client = await aiohttp_client(app)
+    resp = await client.get("/_test/height")
+    assert resp.headers["X-Block-Height"] == "18234567"
+
+
+async def test_x_block_height_header_absent_when_unknown(aiohttp_client):
+    from exec_rest_api.metrics import Metrics
+    metrics = Metrics()
+    mock = AsyncMock(spec=UpstreamClient)
+    app = create_app(config=_make_config(), upstream=mock)
+    app["metrics"] = metrics
+    app["chain_head"] = _StubChainHead(value=None)
+
+    async def ok(request: web.Request) -> web.Response:
+        return web.Response(text="ok")
+
+    app.router.add_get("/_test/no-height", ok)
+    client = await aiohttp_client(app)
+    resp = await client.get("/_test/no-height")
+    assert "X-Block-Height" not in resp.headers
+
+
+async def test_metrics_middleware_records_500_status_on_exception(
+    aiohttp_client, app_with_test_route
+):
+    from exec_rest_api.metrics import Metrics
+    metrics = Metrics()
+    mock = AsyncMock(spec=UpstreamClient)
+    app = await app_with_test_route(mock)
+    app["metrics"] = metrics
+    client = await aiohttp_client(app)
+    await client.get("/_test/unexpected")
+    out = metrics.render()
+    assert 'status="500"' in out
