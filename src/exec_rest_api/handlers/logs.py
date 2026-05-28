@@ -14,9 +14,10 @@ from typing import Any
 
 from aiohttp import web
 
-from exec_rest_api.block_id import BlockId, BlockIdError, parse_block_id
+from exec_rest_api.block_id import BlockIdError, parse_block_id
+from exec_rest_api.block_resolve import resolve_block_id
 from exec_rest_api.cursor import Cursor, CursorError, decode_cursor, encode_cursor
-from exec_rest_api.encoding import EncodingError, hex_to_int, map_address_lowercase
+from exec_rest_api.encoding import EncodingError, map_address_lowercase
 from exec_rest_api.errors import Problem, problem_response
 from exec_rest_api.handlers.transactions import log_from_rpc
 from exec_rest_api.pagination import fetch_logs_paginated
@@ -48,32 +49,6 @@ def _chain_reorged(path: str, detail: str) -> web.Response:
             instance=path,
         )
     )
-
-
-async def _resolve_block_id_to_number(
-    upstream: UpstreamClient, bid: BlockId
-) -> int | None:
-    """Resolve a BlockId to an integer block number. Returns None if not found."""
-    if bid.is_number():
-        assert bid.number is not None
-        return bid.number
-    if bid.is_tag():
-        if bid.tag == "earliest":
-            return 0
-        if bid.tag == "latest":
-            head_hex = await upstream.call("eth_blockNumber")
-            return hex_to_int(head_hex)
-        # safe / finalized / pending — fetch the block summary
-        rpc = await upstream.call("eth_getBlockByNumber", [bid.tag, False])
-        if rpc is None:
-            return None
-        return hex_to_int(rpc["number"])
-    # hash
-    assert bid.hash is not None
-    rpc = await upstream.call("eth_getBlockByHash", [bid.hash, False])
-    if rpc is None:
-        return None
-    return hex_to_int(rpc["number"])
 
 
 def _parse_topics(request: web.Request) -> tuple[list[str | None] | None, str | None]:
@@ -226,8 +201,8 @@ async def get_logs(request: web.Request) -> web.Response:
             to_bid = parse_block_id(request.query.get("toBlock", "latest"))
         except BlockIdError as e:
             return _bad_request(request.path, str(e))
-        from_block_resolved = await _resolve_block_id_to_number(upstream, from_bid)
-        to_block_resolved = await _resolve_block_id_to_number(upstream, to_bid)
+        from_block_resolved = await resolve_block_id(upstream, from_bid)
+        to_block_resolved = await resolve_block_id(upstream, to_bid)
         if from_block_resolved is None or to_block_resolved is None:
             return _bad_request(request.path, "fromBlock/toBlock could not be resolved")
         from_block = from_block_resolved
@@ -325,8 +300,8 @@ async def post_logs_search(request: web.Request) -> web.Response:
             to_bid = parse_block_id(body.get("toBlock", "latest"))
         except BlockIdError as e:
             return _bad_request(request.path, str(e))
-        from_block_resolved = await _resolve_block_id_to_number(upstream, from_bid)
-        to_block_resolved = await _resolve_block_id_to_number(upstream, to_bid)
+        from_block_resolved = await resolve_block_id(upstream, from_bid)
+        to_block_resolved = await resolve_block_id(upstream, to_bid)
         if from_block_resolved is None or to_block_resolved is None:
             return _bad_request(request.path, "fromBlock/toBlock could not be resolved")
         from_block = from_block_resolved

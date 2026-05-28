@@ -14,13 +14,14 @@ from typing import Any
 from aiohttp import web
 
 from exec_rest_api.block_id import BlockIdError, parse_block_id
+from exec_rest_api.block_resolve import resolve_block_id
 from exec_rest_api.cursor import (
     CursorError,
     TraceCursor,
     decode_trace_cursor,
     encode_trace_cursor,
 )
-from exec_rest_api.encoding import EncodingError, hex_to_int, map_address_lowercase
+from exec_rest_api.encoding import EncodingError, map_address_lowercase
 from exec_rest_api.errors import Problem, problem_response
 from exec_rest_api.handlers.computed import call_request_to_rpc
 from exec_rest_api.handlers.transactions import trace_from_rpc
@@ -66,27 +67,6 @@ def _parse_addresses_csv(raw: str | None) -> tuple[list[str] | None, str | None]
         except EncodingError as e:
             return None, str(e)
     return out, None
-
-
-async def _resolve_block_id_to_number(upstream: UpstreamClient, raw: str) -> int:
-    bid = parse_block_id(raw)
-    if bid.is_number():
-        assert bid.number is not None
-        return bid.number
-    if bid.is_tag():
-        if bid.tag == "earliest":
-            return 0
-        if bid.tag == "latest":
-            return hex_to_int(await upstream.call("eth_blockNumber"))
-        rpc = await upstream.call("eth_getBlockByNumber", [bid.tag, False])
-        if rpc is None:
-            raise BlockIdError(f"could not resolve {bid.tag!r}")
-        return hex_to_int(rpc["number"])
-    assert bid.hash is not None
-    rpc = await upstream.call("eth_getBlockByHash", [bid.hash, False])
-    if rpc is None:
-        raise BlockIdError(f"block hash {bid.hash} not found")
-    return hex_to_int(rpc["number"])
 
 
 def _validate_address_list(value: Any) -> list[str] | str:
@@ -137,14 +117,16 @@ async def get_traces(request: web.Request) -> web.Response:
         after = cursor.after
     else:
         try:
-            from_block = await _resolve_block_id_to_number(
-                upstream, request.query.get("fromBlock", "earliest")
-            )
-            to_block = await _resolve_block_id_to_number(
-                upstream, request.query.get("toBlock", "latest")
-            )
+            from_bid = parse_block_id(request.query.get("fromBlock", "earliest"))
+            to_bid = parse_block_id(request.query.get("toBlock", "latest"))
         except BlockIdError as e:
             return _bad_request(request.path, str(e))
+        from_block_resolved = await resolve_block_id(upstream, from_bid)
+        to_block_resolved = await resolve_block_id(upstream, to_bid)
+        if from_block_resolved is None or to_block_resolved is None:
+            return _bad_request(request.path, "fromBlock/toBlock could not be resolved")
+        from_block = from_block_resolved
+        to_block = to_block_resolved
         if from_block > to_block:
             return _bad_request(
                 request.path, f"fromBlock ({from_block}) must be <= toBlock ({to_block})"
@@ -334,14 +316,16 @@ async def post_traces_search(request: web.Request) -> web.Response:
         if not isinstance(body, dict):
             return _bad_request(request.path, "request body must be a JSON object")
         try:
-            from_block = await _resolve_block_id_to_number(
-                upstream, str(body.get("fromBlock", "earliest"))
-            )
-            to_block = await _resolve_block_id_to_number(
-                upstream, str(body.get("toBlock", "latest"))
-            )
+            from_bid = parse_block_id(str(body.get("fromBlock", "earliest")))
+            to_bid = parse_block_id(str(body.get("toBlock", "latest")))
         except BlockIdError as e:
             return _bad_request(request.path, str(e))
+        from_block_resolved = await resolve_block_id(upstream, from_bid)
+        to_block_resolved = await resolve_block_id(upstream, to_bid)
+        if from_block_resolved is None or to_block_resolved is None:
+            return _bad_request(request.path, "fromBlock/toBlock could not be resolved")
+        from_block = from_block_resolved
+        to_block = to_block_resolved
         if from_block > to_block:
             return _bad_request(
                 request.path, f"fromBlock ({from_block}) must be <= toBlock ({to_block})"
