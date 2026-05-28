@@ -24,6 +24,14 @@ pipx install exec-rest-api
 exec-rest-api --upstream-http http://localhost:8545
 ```
 
+Or from a source checkout, without any setup steps:
+
+```sh
+scripts/run.sh --upstream-http http://localhost:8545
+```
+
+(`scripts/run.sh` creates `.venv/` and installs dependencies on first run, then re-uses them on subsequent invocations.)
+
 Then:
 
 ```sh
