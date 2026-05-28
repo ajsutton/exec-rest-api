@@ -20,7 +20,7 @@ Delivers: project skeleton, config, upstream JSON-RPC HTTP client, encoding help
 
 ---
 
-## Plan 2 — Read endpoints
+## Plan 2 — Read endpoints `[DONE]`
 
 GET endpoints for blocks, accounts, transactions, logs (paginated), traces, and gas/fees. Mostly mechanical handler work on top of the foundation; introduces cursor pagination, block-id path parameters, and EIP-7702 delegation detection.
 
@@ -84,7 +84,7 @@ Unit tests mock `UpstreamClient` and verify (a) the JSON-RPC method + params sen
 
 ---
 
-## Plan 3 — Computed reads + tx submission + RLP content negotiation
+## Plan 3 — Computed reads + tx submission + RLP content negotiation `[DONE]`
 
 POST endpoints that take a body (request bodies can exceed URL limits), transaction submission, and the `Accept: application/vnd.ethereum.rlp` representation on the four GET endpoints that support raw bytes.
 
