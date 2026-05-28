@@ -153,7 +153,7 @@ Unit tests mock upstream; integration tests submit and trace a real transaction 
 
 ---
 
-## Plan 4 — SSE streams + WS subscription manager
+## Plan 4 — SSE streams + WS subscription manager `[DONE]`
 
 Server-Sent Event streams for `newHeads`, `logs`, `newPendingTransactions`, `syncing`. Introduces the WebSocket connection to the upstream and the subscription multiplexer.
 

@@ -7,8 +7,9 @@ negotiation for raw RLP, no hex quantities).
 
 ## Status
 
-`v0.1` — foundation only. Endpoints in this release: `/chain/*`, `/health`,
-`/health/ready`. More to come.
+`v0.4` — streams added. Endpoints: `/chain/*`, `/blocks/*`, `/accounts/*`,
+`/transactions/*`, `/logs`, `/traces/*`, `/gas/*`, `/utils/keccak256`,
+`/health/*`, `/streams/{blocks,logs,pending-transactions,sync-status}`.
 
 ## Install
 
