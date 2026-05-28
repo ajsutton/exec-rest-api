@@ -317,3 +317,92 @@ async def test_get_trace_null_is_404(aiohttp_client):
     tx_hash = "0x" + "ff" * 32
     resp = await client.get(f"/transactions/{tx_hash}/trace")
     assert resp.status == 404
+
+
+# ─── POST /transactions ───────────────────────────────────────────────────
+
+
+from exec_rest_api.upstream import UpstreamJsonRpcError  # noqa: E402
+
+
+async def test_post_transactions_json_body_returns_202(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    tx_hash = "0x" + "ab" * 32
+    mock.call.return_value = tx_hash
+    client = await _build_client(aiohttp_client, mock)
+
+    resp = await client.post("/transactions", json={"raw": "0xdeadbeef"})
+    assert resp.status == 202
+    assert resp.headers["Location"] == f"/transactions/{tx_hash}"
+    body = await resp.json()
+    assert body == {"hash": tx_hash}
+    mock.call.assert_awaited_once_with("eth_sendRawTransaction", ["0xdeadbeef"])
+
+
+async def test_post_transactions_rlp_body_returns_202(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    tx_hash = "0x" + "cc" * 32
+    mock.call.return_value = tx_hash
+    client = await _build_client(aiohttp_client, mock)
+
+    raw_bytes = bytes.fromhex("deadbeef")
+    resp = await client.post(
+        "/transactions",
+        data=raw_bytes,
+        headers={"Content-Type": "application/vnd.ethereum.rlp"},
+    )
+    assert resp.status == 202
+    body = await resp.json()
+    assert body["hash"] == tx_hash
+    mock.call.assert_awaited_once_with("eth_sendRawTransaction", ["0xdeadbeef"])
+
+
+async def test_post_transactions_unsupported_content_type_415(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    client = await _build_client(aiohttp_client, mock)
+    resp = await client.post(
+        "/transactions",
+        data=b"hello",
+        headers={"Content-Type": "text/plain"},
+    )
+    assert resp.status == 415
+
+
+async def test_post_transactions_malformed_json_400(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    client = await _build_client(aiohttp_client, mock)
+    resp = await client.post(
+        "/transactions",
+        data="not json",
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp.status == 400
+
+
+async def test_post_transactions_missing_raw_field_400(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    client = await _build_client(aiohttp_client, mock)
+    resp = await client.post("/transactions", json={})
+    assert resp.status == 400
+
+
+async def test_post_transactions_nonce_too_low_422(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    mock.call.side_effect = UpstreamJsonRpcError(
+        code=-32000, message="nonce too low: have 5 want 8"
+    )
+    client = await _build_client(aiohttp_client, mock)
+    resp = await client.post("/transactions", json={"raw": "0xdeadbeef"})
+    assert resp.status == 422
+    body = await resp.json()
+    assert body["type"].endswith("/transaction-rejected/nonce-too-low")
+
+
+async def test_post_transactions_already_known_422(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    mock.call.side_effect = UpstreamJsonRpcError(code=-32000, message="already known")
+    client = await _build_client(aiohttp_client, mock)
+    resp = await client.post("/transactions", json={"raw": "0xdeadbeef"})
+    assert resp.status == 422
+    body = await resp.json()
+    assert body["type"].endswith("/transaction-rejected/already-known")

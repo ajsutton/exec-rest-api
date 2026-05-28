@@ -13,6 +13,7 @@ from typing import Any
 
 from aiohttp import web
 
+from exec_rest_api.content_neg import CONTENT_TYPE_RLP
 from exec_rest_api.encoding import (
     hex_to_int,
     map_address_lowercase,
@@ -220,7 +221,83 @@ def _not_found(path: str, detail: str) -> web.Response:
     )
 
 
+def _unsupported_media_type(path: str) -> web.Response:
+    return problem_response(
+        Problem(
+            status=415,
+            type_slug="unsupported-media-type",
+            title="Unsupported media type",
+            detail="POST /transactions accepts application/json or application/vnd.ethereum.rlp",
+            instance=path,
+        )
+    )
+
+
+def _bad_request(path: str, detail: str) -> web.Response:
+    return problem_response(
+        Problem(
+            status=400,
+            type_slug="invalid-request",
+            title="Invalid request",
+            detail=detail,
+            instance=path,
+        )
+    )
+
+
+_HEX_BYTES_RE = re.compile(r"^0x([0-9a-fA-F]{2})*$")
+
+
+async def _read_raw_tx(request: web.Request) -> str | web.Response:
+    ct = (request.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+    if ct == CONTENT_TYPE_RLP:
+        raw_bytes = await request.read()
+        if not raw_bytes:
+            return _bad_request(request.path, "RLP body is empty")
+        return "0x" + raw_bytes.hex()
+    if ct == "application/json" or ct == "":
+        try:
+            body = await request.json()
+        except (ValueError, TypeError):
+            return _bad_request(request.path, "request body must be valid JSON")
+        if not isinstance(body, dict) or "raw" not in body:
+            return _bad_request(request.path, "field `raw` is required")
+        raw = body["raw"]
+        if not isinstance(raw, str) or not _HEX_BYTES_RE.fullmatch(raw):
+            return _bad_request(
+                request.path, "field `raw` must be 0x-prefixed hex bytes"
+            )
+        return raw.lower()
+    return _unsupported_media_type(request.path)
+
+
+async def post_transaction(request: web.Request) -> web.Response:
+    raw_or_err = await _read_raw_tx(request)
+    if isinstance(raw_or_err, web.Response):
+        return raw_or_err
+    upstream: UpstreamClient = request.app["upstream"]
+    tx_hash = await upstream.call("eth_sendRawTransaction", [raw_or_err])
+    if not isinstance(tx_hash, str):
+        return problem_response(
+            Problem(
+                status=502,
+                type_slug="upstream-error",
+                title="Upstream error",
+                detail="eth_sendRawTransaction returned non-string",
+                instance=request.path,
+            )
+        )
+    tx_hash_lower = tx_hash.lower()
+    return web.json_response(
+        {"hash": tx_hash_lower},
+        status=202,
+        headers={"Location": f"/transactions/{tx_hash_lower}"},
+    )
+
+
 def register_routes(app: web.Application) -> None:
     add_get(app, "/transactions/{hash}", get_transaction)
     add_get(app, "/transactions/{hash}/receipt", get_receipt)
     add_get(app, "/transactions/{hash}/trace", get_trace)
+    app.router.add_post("/transactions", post_transaction)
+    app.router.add_post("/transactions/", post_transaction)
