@@ -183,7 +183,7 @@ Hex quantities (`"0x4d2"`) are never used for numeric values, in any direction.
 | Kind | Format | Notes |
 |---|---|---|
 | Block hash, tx hash, state/receipts/storage root, code hash | `0x` + 64 lowercase hex chars | |
-| Address | `0x` + 40 chars, **EIP-55 checksummed on output**, any case accepted on input | |
+| Address | `0x` + 40 lowercase hex chars on output, any case accepted on input | The proxy does no Keccak-256 itself, so EIP-55 checksumming is not applied. Clients that want a checksummed form should compute it locally. |
 | Topic | `0x` + 64 hex chars | |
 | Calldata, bytecode, signature, raw tx body, blob data | `0x` + even number of lowercase hex chars | |
 | Storage slot (path param) | `0x` + up to 64 hex chars, **or** decimal integer (proxy converts) | |

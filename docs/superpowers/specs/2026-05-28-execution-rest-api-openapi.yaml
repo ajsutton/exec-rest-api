@@ -12,7 +12,7 @@ info:
       - Numbers that always fit in IEEE-754 safely (block numbers, gas units, timestamps, indices)
         are JSON numbers. Wei-denominated amounts are JSON strings of decimal digits to preserve precision.
       - Hex (0x-prefixed) is used only for identifiers and bytes: hashes, addresses, calldata, signatures, RLP.
-      - Addresses output as EIP-55 checksummed; any case accepted on input.
+      - Addresses output lowercase; any case accepted on input. The proxy carries no Keccak-256, so EIP-55 checksumming is not applied.
       - Block identifier accepts: latest|safe|finalized|pending|earliest | decimal number | 0x + 64 hex chars.
       - Errors use application/problem+json (RFC 9457).
       - Pagination uses RFC 8288 Link headers with opaque cursors.
@@ -1200,8 +1200,12 @@ components:
     Address:
       type: string
       pattern: '^0x[0-9a-fA-F]{40}$'
-      description: 20-byte address; EIP-55 checksummed on output, any case accepted on input.
-      example: "0x1234567890AbcdEF1234567890aBcdef12345678"
+      description: |
+        20-byte address. Lowercase on output, any case accepted on input.
+        The proxy does not perform EIP-55 checksumming (it carries no Keccak-256
+        implementation); clients that want a checksummed display form should
+        compute it locally.
+      example: "0x1234567890abcdef1234567890abcdef12345678"
 
     Hash32:
       type: string
