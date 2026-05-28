@@ -7,7 +7,7 @@ import pytest
 from aiohttp import web
 
 from exec_rest_api.config import Config
-from exec_rest_api.server import create_app
+from exec_rest_api.server import add_get, create_app
 from exec_rest_api.upstream import UpstreamClient, UpstreamJsonRpcError
 
 
@@ -113,3 +113,31 @@ async def test_unexpected_exception_returns_500_problem(
     # But the log output does (via the captured exception traceback), so operators can debug.
     # caplog.text includes formatted exception info from logger.exception().
     assert "boom" in caplog.text
+
+
+async def test_add_get_matches_with_and_without_trailing_slash(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    app = create_app(config=_make_config(), upstream=mock)
+
+    async def hello(request: web.Request) -> web.Response:
+        return web.Response(text="hello")
+
+    add_get(app, "/foo", hello)
+
+    client = await aiohttp_client(app)
+    assert (await (await client.get("/foo")).text()) == "hello"
+    assert (await (await client.get("/foo/")).text()) == "hello"
+
+
+async def test_add_get_root_path_unchanged(aiohttp_client):
+    """For path '/', no second route should be added (it would collide)."""
+    mock = AsyncMock(spec=UpstreamClient)
+    app = create_app(config=_make_config(), upstream=mock)
+
+    async def hello(request: web.Request) -> web.Response:
+        return web.Response(text="root")
+
+    add_get(app, "/", hello)
+
+    client = await aiohttp_client(app)
+    assert (await (await client.get("/")).text()) == "root"

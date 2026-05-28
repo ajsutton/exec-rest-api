@@ -60,3 +60,12 @@ async def test_unknown_path_404_with_problem_body(proxy_client):
 async def test_request_id_round_trip(proxy_client):
     resp = await proxy_client.get("/chain/id", headers={"X-Request-ID": "from-integration-test"})
     assert resp.headers["X-Request-ID"] == "from-integration-test"
+
+
+async def test_trailing_slash_optional(proxy_client):
+    """Both /chain/id and /chain/id/ should reach the same handler."""
+    resp1 = await proxy_client.get("/chain/id")
+    resp2 = await proxy_client.get("/chain/id/")
+    assert resp1.status == 200
+    assert resp2.status == 200
+    assert await resp1.json() == await resp2.json()

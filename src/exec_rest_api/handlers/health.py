@@ -7,6 +7,7 @@ from aiohttp import web
 from exec_rest_api.config import Config
 from exec_rest_api.encoding import hex_to_int
 from exec_rest_api.errors import Problem, problem_response
+from exec_rest_api.server import add_get
 from exec_rest_api.upstream import UpstreamClient, UpstreamError, UpstreamJsonRpcError
 
 
@@ -67,5 +68,5 @@ async def ready(request: web.Request) -> web.Response:
 
 
 def register_routes(app: web.Application) -> None:
-    app.router.add_get("/health", health)
-    app.router.add_get("/health/ready", ready)
+    add_get(app, "/health", health)
+    add_get(app, "/health/ready", ready)

@@ -7,6 +7,7 @@ import asyncio
 from aiohttp import web
 
 from exec_rest_api.encoding import hex_to_int
+from exec_rest_api.server import add_get
 from exec_rest_api.upstream import UpstreamClient
 
 
@@ -73,8 +74,8 @@ def _sync_to_rest(rpc_value: object) -> dict[str, object]:
 
 
 def register_routes(app: web.Application) -> None:
-    app.router.add_get("/chain", chain)
-    app.router.add_get("/chain/id", chain_id)
-    app.router.add_get("/chain/sync-status", chain_sync_status)
-    app.router.add_get("/chain/client", chain_client)
-    app.router.add_get("/chain/peers", chain_peers)
+    add_get(app, "/chain", chain)
+    add_get(app, "/chain/id", chain_id)
+    add_get(app, "/chain/sync-status", chain_sync_status)
+    add_get(app, "/chain/client", chain_client)
+    add_get(app, "/chain/peers", chain_peers)

@@ -118,3 +118,10 @@ def create_app(*, config: Config, upstream: UpstreamClient) -> web.Application:
     app["config"] = config
     app["upstream"] = upstream
     return app
+
+
+def add_get(app: web.Application, path: str, handler: Handler) -> None:
+    """Register a GET handler that matches both with and without a trailing slash."""
+    app.router.add_get(path, handler)
+    if not path.endswith("/"):
+        app.router.add_get(path + "/", handler)

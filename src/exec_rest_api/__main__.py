@@ -88,7 +88,9 @@ async def _run(config: Config) -> None:
         await site.start()
 
         logging.getLogger("exec_rest_api").info(
-            "listening",
+            "listening on http://%s (upstream %s)",
+            config.listen,
+            config.upstream_http,
             extra={"listen": config.listen, "upstream_http": config.upstream_http},
         )
 
