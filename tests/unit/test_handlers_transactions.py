@@ -414,3 +414,44 @@ async def test_post_transactions_empty_hex_raw_400(aiohttp_client):
     client = await _build_client(aiohttp_client, mock)
     resp = await client.post("/transactions", json={"raw": "0x"})
     assert resp.status == 400
+
+
+# ─── GET /transactions/{hash} content negotiation ─────────────────────────
+
+
+async def test_get_transaction_rlp_accept_returns_bytes(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    raw_hex = "0xf86c"  # short, contrived
+    mock.call.return_value = raw_hex
+    client = await _build_client(aiohttp_client, mock)
+
+    resp = await client.get(
+        f"/transactions/{'0x' + 'aa' * 32}",
+        headers={"Accept": "application/vnd.ethereum.rlp"},
+    )
+    assert resp.status == 200
+    assert resp.headers["Content-Type"] == "application/vnd.ethereum.rlp"
+    body = await resp.read()
+    assert body == bytes.fromhex(raw_hex[2:])
+    mock.call.assert_awaited_once_with("debug_getRawTransaction", ["0x" + "aa" * 32])
+
+
+async def test_get_transaction_unsupported_accept_returns_406(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    client = await _build_client(aiohttp_client, mock)
+    resp = await client.get(
+        f"/transactions/{'0x' + 'aa' * 32}",
+        headers={"Accept": "text/html"},
+    )
+    assert resp.status == 406
+
+
+async def test_get_transaction_rlp_not_found_404(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    mock.call.return_value = None
+    client = await _build_client(aiohttp_client, mock)
+    resp = await client.get(
+        f"/transactions/{'0x' + 'aa' * 32}",
+        headers={"Accept": "application/vnd.ethereum.rlp"},
+    )
+    assert resp.status == 404

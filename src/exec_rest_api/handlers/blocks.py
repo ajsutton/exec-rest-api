@@ -14,6 +14,11 @@ from typing import Any
 from aiohttp import web
 
 from exec_rest_api.block_id import BlockId, BlockIdError, parse_block_id
+from exec_rest_api.content_neg import (
+    CONTENT_TYPE_JSON,
+    CONTENT_TYPE_RLP,
+    select_representation,
+)
 from exec_rest_api.encoding import decimal_to_hex, hex_to_int, map_address_lowercase, wei_from_rpc
 from exec_rest_api.errors import Problem, problem_response
 from exec_rest_api.handlers.transactions import (
@@ -122,6 +127,25 @@ def _not_found(path: str, detail: str) -> web.Response:
     )
 
 
+def _not_acceptable(path: str, supported: list[str]) -> web.Response:
+    return problem_response(
+        Problem(
+            status=406,
+            type_slug="not-acceptable",
+            title="Not acceptable",
+            detail=f"supported representations: {', '.join(supported)}",
+            instance=path,
+        )
+    )
+
+
+def _rlp_response(hex_body: str) -> web.Response:
+    return web.Response(
+        body=bytes.fromhex(hex_body[2:] if hex_body.startswith("0x") else hex_body),
+        content_type=CONTENT_TYPE_RLP,
+    )
+
+
 # ─── handlers ─────────────────────────────────────────────────────────────
 
 
@@ -136,7 +160,16 @@ async def get_block(request: web.Request) -> web.Response:
     if err is not None:
         return err
     assert bid is not None
+    supported = [CONTENT_TYPE_JSON, CONTENT_TYPE_RLP]
+    chosen = select_representation(request.headers.get("Accept"), supported)
+    if chosen is None:
+        return _not_acceptable(request.path, supported)
     upstream: UpstreamClient = request.app["upstream"]
+    if chosen == CONTENT_TYPE_RLP:
+        raw = await upstream.call("debug_getRawBlock", [bid.to_rpc_param()])
+        if raw is None or raw == "0x":
+            return _not_found(request.path, f"block {request.match_info['id']} not found")
+        return _rlp_response(raw)
     rpc = await _fetch_block(upstream, bid)
     if rpc is None:
         return _not_found(request.path, f"block {request.match_info['id']} not found")
@@ -149,7 +182,16 @@ async def get_block_header(request: web.Request) -> web.Response:
     if err is not None:
         return err
     assert bid is not None
+    supported = [CONTENT_TYPE_JSON, CONTENT_TYPE_RLP]
+    chosen = select_representation(request.headers.get("Accept"), supported)
+    if chosen is None:
+        return _not_acceptable(request.path, supported)
     upstream: UpstreamClient = request.app["upstream"]
+    if chosen == CONTENT_TYPE_RLP:
+        raw = await upstream.call("debug_getRawHeader", [bid.to_rpc_param()])
+        if raw is None or raw == "0x":
+            return _not_found(request.path, f"block {request.match_info['id']} not found")
+        return _rlp_response(raw)
     rpc = await _fetch_block(upstream, bid)
     if rpc is None:
         return _not_found(request.path, f"block {request.match_info['id']} not found")
@@ -219,7 +261,20 @@ async def get_block_receipts(request: web.Request) -> web.Response:
     if err is not None:
         return err
     assert bid is not None
+    supported = [CONTENT_TYPE_JSON, CONTENT_TYPE_RLP]
+    chosen = select_representation(request.headers.get("Accept"), supported)
+    if chosen is None:
+        return _not_acceptable(request.path, supported)
     upstream: UpstreamClient = request.app["upstream"]
+    if chosen == CONTENT_TYPE_RLP:
+        raw = await upstream.call("debug_getRawReceipts", [bid.to_rpc_param()])
+        if raw is None:
+            return _not_found(request.path, f"block {request.match_info['id']} not found")
+        # debug_getRawReceipts returns an array of hex strings; concatenate raw bytes
+        if isinstance(raw, list):
+            joined = b"".join(bytes.fromhex(r[2:]) for r in raw)
+            return web.Response(body=joined, content_type=CONTENT_TYPE_RLP)
+        return _rlp_response(raw)
     rpc = await upstream.call("eth_getBlockReceipts", [bid.to_rpc_param()])
     if rpc is None:
         return _not_found(request.path, f"block {request.match_info['id']} not found")

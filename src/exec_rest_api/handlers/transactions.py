@@ -13,7 +13,11 @@ from typing import Any
 
 from aiohttp import web
 
-from exec_rest_api.content_neg import CONTENT_TYPE_RLP
+from exec_rest_api.content_neg import (
+    CONTENT_TYPE_JSON,
+    CONTENT_TYPE_RLP,
+    select_representation,
+)
 from exec_rest_api.encoding import (
     hex_to_int,
     map_address_lowercase,
@@ -168,7 +172,16 @@ async def get_transaction(request: web.Request) -> web.Response:
     tx_hash = _validate_tx_hash(request.match_info["hash"])
     if tx_hash is None:
         return _bad_hash(request.path)
+    supported = [CONTENT_TYPE_JSON, CONTENT_TYPE_RLP]
+    chosen = select_representation(request.headers.get("Accept"), supported)
+    if chosen is None:
+        return _not_acceptable(request.path, supported)
     upstream: UpstreamClient = request.app["upstream"]
+    if chosen == CONTENT_TYPE_RLP:
+        raw = await upstream.call("debug_getRawTransaction", [tx_hash])
+        if raw is None or raw == "0x":
+            return _not_found(request.path, f"transaction {tx_hash} not found")
+        return _rlp_response(raw)
     rpc = await upstream.call("eth_getTransactionByHash", [tx_hash])
     if rpc is None:
         return _not_found(request.path, f"transaction {tx_hash} not found")
@@ -206,6 +219,25 @@ def _bad_hash(path: str) -> web.Response:
             detail="transaction hash must be 0x-prefixed 32-byte hex",
             instance=path,
         )
+    )
+
+
+def _not_acceptable(path: str, supported: list[str]) -> web.Response:
+    return problem_response(
+        Problem(
+            status=406,
+            type_slug="not-acceptable",
+            title="Not acceptable",
+            detail=f"supported representations: {', '.join(supported)}",
+            instance=path,
+        )
+    )
+
+
+def _rlp_response(hex_body: str) -> web.Response:
+    return web.Response(
+        body=bytes.fromhex(hex_body[2:] if hex_body.startswith("0x") else hex_body),
+        content_type=CONTENT_TYPE_RLP,
     )
 
 

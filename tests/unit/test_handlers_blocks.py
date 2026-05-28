@@ -466,3 +466,49 @@ async def test_only_one_rpc_for_header_endpoint(aiohttp_client):
     resp = await client.get("/blocks/latest/header")
     assert resp.status == 200
     assert mock.call.call_count == 1
+
+
+# ─── RLP content negotiation ──────────────────────────────────────────────
+
+
+async def test_get_block_rlp_accept(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    mock.call.return_value = "0xf90100"
+    client = await _build_client(aiohttp_client, mock)
+    resp = await client.get(
+        "/blocks/0", headers={"Accept": "application/vnd.ethereum.rlp"}
+    )
+    assert resp.status == 200
+    assert resp.headers["Content-Type"] == "application/vnd.ethereum.rlp"
+    assert await resp.read() == bytes.fromhex("f90100")
+    mock.call.assert_awaited_once_with("debug_getRawBlock", ["0x0"])
+
+
+async def test_get_block_header_rlp_accept(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    mock.call.return_value = "0xc0"
+    client = await _build_client(aiohttp_client, mock)
+    resp = await client.get(
+        "/blocks/0/header", headers={"Accept": "application/vnd.ethereum.rlp"}
+    )
+    assert resp.status == 200
+    assert resp.headers["Content-Type"] == "application/vnd.ethereum.rlp"
+    mock.call.assert_awaited_once_with("debug_getRawHeader", ["0x0"])
+
+
+async def test_get_block_receipts_rlp_accept(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    mock.call.return_value = "0xc1c2"
+    client = await _build_client(aiohttp_client, mock)
+    resp = await client.get(
+        "/blocks/0/receipts", headers={"Accept": "application/vnd.ethereum.rlp"}
+    )
+    assert resp.status == 200
+    mock.call.assert_awaited_once_with("debug_getRawReceipts", ["0x0"])
+
+
+async def test_get_block_406_for_unsupported_accept(aiohttp_client):
+    mock = AsyncMock(spec=UpstreamClient)
+    client = await _build_client(aiohttp_client, mock)
+    resp = await client.get("/blocks/0", headers={"Accept": "text/html"})
+    assert resp.status == 406

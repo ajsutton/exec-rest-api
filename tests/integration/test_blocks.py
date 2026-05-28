@@ -85,3 +85,20 @@ async def test_get_block_traces_genesis(proxy_client):
     assert resp.status == 200
     body = await resp.json()
     assert isinstance(body, list)
+
+
+async def test_get_block_rlp_accept(proxy_client):
+    resp = await proxy_client.get(
+        "/blocks/0", headers={"Accept": "application/vnd.ethereum.rlp"}
+    )
+    if resp.status == 501:
+        pytest.skip("anvil build does not support debug_getRawBlock")
+    assert resp.status == 200
+    assert resp.headers["Content-Type"] == "application/vnd.ethereum.rlp"
+    body = await resp.read()
+    assert len(body) > 0
+
+
+async def test_get_block_unsupported_accept_406(proxy_client):
+    resp = await proxy_client.get("/blocks/0", headers={"Accept": "text/html"})
+    assert resp.status == 406
