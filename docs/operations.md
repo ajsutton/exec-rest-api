@@ -152,8 +152,8 @@ One-time setup:
 To cut a release:
 
 ```sh
-git tag v0.5.0
-git push origin v0.5.0
+git tag v1.0.0
+git push origin v1.0.0
 ```
 
 The release workflow draft-creates a GitHub release, publishes to PyPI, builds and signs the `.pyz`, builds and signs the multi-arch OCI image, attaches the SBOM, then promotes the draft to published.

@@ -7,7 +7,7 @@ negotiation for raw RLP, no hex quantities).
 
 ## Status
 
-`v0.5` — feature-complete. Endpoints: `/chain/*`, `/blocks/*`, `/accounts/*`,
+`v1.0` — stable. Endpoints: `/chain/*`, `/blocks/*`, `/accounts/*`,
 `/transactions/*`, `/logs`, `/traces/*`, `/gas/*`, `/utils/keccak256`,
 `/health/*`, `/streams/{blocks,logs,pending-transactions,sync-status}`,
 `/metrics`.
